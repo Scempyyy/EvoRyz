@@ -1,0 +1,3 @@
+{
+  "expo": { "name": "EvoRyz", "slug": "evoryz", "version": "1.0.0", "orientation": "portrait", "scheme": "evoryz", "userInterfaceStyle": "dark", "android": { "package": "com.evoryz.app" }, "plugins": ["expo-router", "expo-image-picker", ["expo-audio", { "microphonePermission": "Allow EvoRyz to record voice notes." }]], "experiments": { "typedRoutes": true } }
+}
