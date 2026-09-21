@@ -1,3 +1,92 @@
-import { useState } from 'react'; import { router } from 'expo-router'; import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native'; import { SafeAreaView } from 'react-native-safe-area-context'; import { useApp } from '@/src/store/AppContext'; import { colors } from '@/src/theme';
-export default function Team() { const [name, setName] = useState(''); const [code, setCode] = useState(''); const { configureMode } = useApp(); const finish = (joining = false) => { configureMode('team', joining ? 'Joined Team' : name || 'My Team'); router.replace('/(tabs)/daily'); }; return <SafeAreaView style={s.root}><View><Text style={s.brand}>EvoRyz</Text><Text style={s.title}>Set up your team</Text><Text style={s.copy}>Teams are shared workspaces for multiple members. This local prototype keeps the workspace ready for sync later.</Text><Text style={s.label}>CREATE A TEAM</Text><TextInput value={name} onChangeText={setName} placeholder="Team name" placeholderTextColor={colors.muted} style={s.input}/><Pressable style={s.button} onPress={() => finish()}><Text style={s.buttonText}>Create team</Text></Pressable><Text style={s.or}>or join with a team code</Text><TextInput value={code} onChangeText={setCode} autoCapitalize="characters" placeholder="EVR-XXXX" placeholderTextColor={colors.muted} style={s.input}/><Pressable style={s.secondary} onPress={() => finish(true)}><Text style={s.secondaryText}>Join team</Text></Pressable></View></SafeAreaView>; }
-const s = StyleSheet.create({ root: { flex: 1, backgroundColor: colors.bg, padding: 24 }, brand: { color: colors.violetLight, fontWeight: '800', fontSize: 22, marginTop: 32 }, title: { color: 'white', fontWeight: '800', fontSize: 34, marginTop: 20 }, copy: { color: colors.muted, lineHeight: 23, fontSize: 15, marginTop: 10, marginBottom: 30 }, label: { color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 9 }, input: { backgroundColor: colors.surface, color: 'white', borderRadius: 14, padding: 16, fontSize: 16 }, button: { backgroundColor: colors.violet, padding: 17, borderRadius: 14, alignItems: 'center', marginTop: 10 }, buttonText: { color: 'white', fontWeight: '800', fontSize: 16 }, or: { color: colors.muted, textAlign: 'center', marginVertical: 24 }, secondary: { backgroundColor: colors.surface, padding: 17, borderRadius: 14, alignItems: 'center', marginTop: 10 }, secondaryText: { color: colors.violetLight, fontWeight: '800', fontSize: 16 } });
+import { useState } from 'react';
+import { router } from 'expo-router';
+import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useApp } from '@/src/store/AppContext';
+import { colors } from '@/src/theme';
+import { feedback } from '@/src/services/feedback';
+
+export default function Team() {
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const { configureMode } = useApp();
+
+  const finish = (joining = false) => {
+    feedback.success(true);
+    configureMode('team', joining ? 'Joined Team' : name || 'My Team');
+    router.replace('/(tabs)/daily');
+  };
+
+  return (
+    <SafeAreaView style={s.root}>
+      <View>
+        <Text style={s.brand}>EvoRyz</Text>
+        <Text style={s.title}>Set up your team</Text>
+        <Text style={s.copy}>
+          Teams are shared workspaces for collaborative accountability and daily momentum. Shared tasks and workspace messages synchronize across all connected members.
+        </Text>
+
+        <Text style={s.label}>CREATE A TEAM</Text>
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder="Team name"
+          placeholderTextColor={colors.muted}
+          style={s.input}
+        />
+        <Pressable style={s.button} onPress={() => finish(false)}>
+          <Text style={s.buttonText}>Create team</Text>
+        </Pressable>
+
+        <Text style={s.or}>or join with a team code</Text>
+        <TextInput
+          value={code}
+          onChangeText={setCode}
+          autoCapitalize="characters"
+          placeholder="EVR-XXXX"
+          placeholderTextColor={colors.muted}
+          style={s.input}
+        />
+        <Pressable style={s.secondary} onPress={() => finish(true)}>
+          <Text style={s.secondaryText}>Join team</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bg, padding: 24 },
+  brand: { color: colors.violetLight, fontWeight: '800', fontSize: 22, marginTop: 32 },
+  title: { color: 'white', fontWeight: '800', fontSize: 34, marginTop: 20 },
+  copy: { color: colors.muted, lineHeight: 23, fontSize: 15, marginTop: 10, marginBottom: 30 },
+  label: { color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 9 },
+  input: {
+    backgroundColor: colors.surface,
+    color: 'white',
+    borderRadius: 14,
+    padding: 16,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  button: {
+    backgroundColor: colors.violet,
+    padding: 17,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  buttonText: { color: 'white', fontWeight: '800', fontSize: 16 },
+  or: { color: colors.muted, textAlign: 'center', marginVertical: 24 },
+  secondary: {
+    backgroundColor: colors.surface,
+    padding: 17,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  secondaryText: { color: colors.violetLight, fontWeight: '800', fontSize: 16 },
+});

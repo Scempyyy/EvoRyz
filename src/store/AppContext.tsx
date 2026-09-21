@@ -1,56 +1,850 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
-import { ActivityEvent, DailySummary, DailyTask, Goal, Habit, Meal, Message, NotificationSettings, UsageMode, User, Visibility, Workspace } from '@/src/types';
+import type { Session } from '@supabase/supabase-js';
+import {
+  ActivityEvent,
+  DailySummary,
+  DailyTask,
+  Goal,
+  Habit,
+  Meal,
+  Message,
+  NotificationSettings,
+  UsageMode,
+  User,
+  Visibility,
+  Workspace,
+  JournalEntry,
+} from '@/src/types';
 import { evoryzDay } from '@/src/services/evoryzDay';
-import { journalCrypto } from '@/src/services/encryption';
+import { journalCrypto, JournalSecurityConfig, EncryptedPayload } from '@/src/services/encryption';
 import { completionPercent, sharedPercent } from '@/src/services/recaps';
 import { localNotificationScheduler } from '@/src/services/notifications';
 import { feedback } from '@/src/services/feedback';
 import { sfx } from '@/src/services/sfx';
+import { authService } from '@/src/services/auth';
+import { supabaseRepo } from '@/src/services/supabaseRepository';
 
-const storageKey = 'evoryz.local-state.v2'; const me = 'me'; const stamp = () => new Date().toISOString(); const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-const notificationDefaults: NotificationSettings = { enabled: true, dailyReminder: true, recapReminder: true, reminderTime: '08:00' };
-const user: User = { id: me, name: 'Scempyy', username: 'scempyy', avatar: 'S', settings: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, notifications: notificationDefaults, preferences: { defaultVisibility: 'private', theme: 'dark', haptics: true, sfx: true } } };
-function seed(day: string) { return {
-  tasks: [{ id: 't1', ownerId: me, title: 'Workout', description: 'Strength session', visibility: 'private', date: day, completed: true, category: 'Health', streak: 12 }, { id: 't2', ownerId: me, title: 'Study 2 hours', visibility: 'private', date: day, completed: true, category: 'Learning' }, { id: 't3', ownerId: me, title: 'Drink 2L water', visibility: 'private', date: day, completed: true, category: 'Health' }, { id: 't4', ownerId: me, title: 'Read 20 pages', visibility: 'private', date: day, completed: false, category: 'Learning' }] as DailyTask[],
-  habits: [{ id: 'h1', ownerId: me, name: 'Morning workout', type: 'build', visibility: 'private', frequency: 'daily', currentStreak: 12, bestStreak: 27, history: [], completedToday: true }, { id: 'h2', ownerId: me, name: 'Read before bed', type: 'build', visibility: 'private', frequency: 'daily', currentStreak: 8, bestStreak: 19, history: [], completedToday: false }, { id: 'h3', ownerId: me, name: 'Mindless scrolling', type: 'avoid', visibility: 'private', frequency: 'daily', currentStreak: 5, bestStreak: 14, history: [], completedToday: true }] as Habit[],
-  goals: [{ id: 'g1', ownerId: me, title: 'Learn Python', description: 'Build fluency through practical projects.', visibility: 'private', progress: 60, deadline: 'Oct 30', priority: 'high', category: 'Learning', milestones: [{ id: 'm1', title: 'Variables & functions', complete: true }, { id: 'm2', title: 'Object-oriented programming', complete: true }, { id: 'm3', title: 'Build an API', complete: false }] }] as Goal[], meals: [] as Meal[], messages: [] as Message[], journal: [{ id: 'j1', conversationId: 'journal', senderId: me, type: 'text', content: journalCrypto.encrypt('Today I showed up even when I did not feel like it.'), timestamp: stamp() }] as Message[], activities: [] as ActivityEvent[],
-}; }
-type State = ReturnType<typeof seed> & { user: User; activeDay: string; summaries: DailySummary[]; hasCompletedSetup: boolean; mode?: UsageMode; workspace?: Workspace };
-const initial = (): State => ({ user, activeDay: evoryzDay(), summaries: [], hasCompletedSetup: false, ...seed(evoryzDay()) });
-type Ctx = State & { hydrated: boolean; dailyPercent: number; sharedDailyPercent: number; streak: number; hasWorkspace: boolean; workspaceLabel: string; signIn: (profile: { name: string; username: string }) => void; configureMode: (mode: UsageMode, name?: string) => void; signOut: () => void; toggleTask: (id: string) => void; addTask: (title: string, visibility: Visibility) => void; toggleHabit: (id: string) => void; addHabit: (name: string, type: Habit['type'], visibility: Visibility) => void; addGoal: (title: string, visibility: Visibility) => void; toggleMilestone: (goalId: string, milestoneId: string) => void; updateNotifications: (patch: Partial<NotificationSettings>) => void; updatePreferences: (patch: Partial<User['settings']['preferences']>) => void; sendMessage: (content: string, conversation: string, type?: Message['type'], attachment?: Pick<Message, 'uri'|'thumbnailUri'|'attachmentName'|'mimeType'|'size'|'width'|'height'|'duration'>) => void; addMeal: (meal: Omit<Meal, 'id' | 'ownerId' | 'date' | 'workspaceId'>) => void; dailyRecap: () => DailySummary };
-const Context = createContext<Ctx | null>(null);
-function rollover(state: State): State { const today = evoryzDay(); if (state.activeDay === today) return state; const summary = { date: state.activeDay, you: completionPercent(state.tasks), shared: state.workspace ? sharedPercent(state.tasks) : undefined }; return { ...state, activeDay: today, summaries: [...state.summaries, summary].slice(-7), tasks: state.tasks.map((task) => ({ ...task, date: today, completed: false })), habits: state.habits.map((habit) => ({ ...habit, currentStreak: habit.completedToday ? habit.currentStreak : 0, completedToday: false })), activities: [] }; }
-export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<State>(initial); const [hydrated, setHydrated] = useState(false);
-  useEffect(() => { AsyncStorage.getItem(storageKey).then((saved) => { if (saved) { const stored = JSON.parse(saved) as Partial<State>; setState(rollover({ ...initial(), ...stored, meals: stored.meals ?? [], user: { ...user, ...stored.user, settings: { ...user.settings, ...stored.user?.settings, preferences: { ...user.settings.preferences, ...stored.user?.settings?.preferences }, notifications: { ...notificationDefaults, ...stored.user?.settings?.notifications } } } })); } }).catch(() => undefined).finally(() => setHydrated(true)); }, []);
-  useEffect(() => { void sfx.hydrate(); return () => sfx.dispose(); }, []);
-  useEffect(() => { if (hydrated) AsyncStorage.setItem(storageKey, JSON.stringify(state)).catch(() => undefined); }, [state, hydrated]);
-  const value = useMemo<Ctx>(() => {
-    const update = (recipe: (previous: State) => State) => setState((previous) => recipe(rollover(previous)));
-    const dailyPercent = completionPercent(state.tasks); const sharedDailyPercent = sharedPercent(state.tasks); const streak = Math.max(0, ...state.habits.map((habit) => habit.currentStreak)); const hasWorkspace = Boolean(state.workspace); const workspaceLabel = state.workspace?.name ?? 'Solo';
-    return { ...state, hydrated, dailyPercent, sharedDailyPercent, streak, hasWorkspace, workspaceLabel,
-      signIn: (profile) => update((previous) => ({ ...previous, user: { ...previous.user, ...profile, avatar: profile.name.trim().charAt(0).toUpperCase() || previous.user.avatar } })),
-      configureMode: (mode, name) => update((previous) => {
-        if (mode === 'solo') return { ...previous, mode, workspace: undefined, hasCompletedSetup: true, tasks: previous.tasks.map((item) => ({ ...item, visibility: 'private', workspaceId: undefined })), habits: previous.habits.map((item) => ({ ...item, visibility: 'private', workspaceId: undefined })), goals: previous.goals.map((item) => ({ ...item, visibility: 'private', workspaceId: undefined })), messages: [], activities: [] };
-        // A local-first workspace never invents people. Other members are added
-        // only by a future sync adapter after a genuine invite/join handshake.
-        const workspaceId = newId(); const members = [{ id: me, name: previous.user.name, avatar: previous.user.avatar }];
-        const workspace: Workspace = { id: workspaceId, mode, name: name?.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'), inviteCode: `EVR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`, members };
-        return { ...previous, mode, workspace, hasCompletedSetup: true };
-      }),
-      signOut: () => update((previous) => ({ ...previous, hasCompletedSetup: false, mode: undefined, workspace: undefined })),
-      toggleTask: (taskId) => update((previous) => { const task = previous.tasks.find((item) => item.id === taskId); if (!task) return previous; const completed = !task.completed; if (completed) feedback.success(previous.user.settings.preferences.haptics); else feedback.tap(previous.user.settings.preferences.haptics); feedback.sound(completed ? 'taskComplete' : 'tap', previous.user.settings.preferences.sfx); const activities = task.visibility === 'shared' && previous.workspace ? [{ id: newId(), userId: me, workspaceId: previous.workspace.id, type: 'completed' as const, title: completed ? task.title : `reopened ${task.title}`, visibility: 'shared' as const, timestamp: stamp() }, ...previous.activities].slice(0, 30) : previous.activities; return { ...previous, tasks: previous.tasks.map((item) => item.id === taskId ? { ...item, completed } : item), activities }; }),
-      addTask: (title, visibility) => update((previous) => { const desired = visibility ?? previous.user.settings.preferences.defaultVisibility; const safeVisibility = previous.workspace && desired === 'shared' ? 'shared' : 'private'; return { ...previous, tasks: [...previous.tasks, { id: newId(), ownerId: me, workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined, title, visibility: safeVisibility, date: previous.activeDay, completed: false }] }; }),
-      toggleHabit: (habitId) => update((previous) => ({ ...previous, habits: previous.habits.map((habit) => { if (habit.id !== habitId) return habit; const completedToday = !habit.completedToday; const currentStreak = completedToday ? habit.currentStreak + 1 : Math.max(0, habit.currentStreak - 1); if (completedToday) { feedback.success(previous.user.settings.preferences.haptics); feedback.sound([5, 7, 10, 14, 21, 30].includes(currentStreak) ? 'streakMilestone' : 'habitComplete', previous.user.settings.preferences.sfx); } return { ...habit, completedToday, currentStreak, bestStreak: Math.max(habit.bestStreak, currentStreak), history: completedToday ? [...habit.history, previous.activeDay] : habit.history.filter((date) => date !== previous.activeDay) }; }) })),
-      addHabit: (name, type, visibility) => update((previous) => { const safeVisibility = previous.workspace && visibility === 'shared' ? 'shared' : 'private'; return { ...previous, habits: [...previous.habits, { id: newId(), ownerId: me, workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined, name, type, visibility: safeVisibility, frequency: 'daily', currentStreak: 0, bestStreak: 0, history: [], completedToday: false }] }; }),
-      addGoal: (title, visibility) => update((previous) => { const safeVisibility = previous.workspace && visibility === 'shared' ? 'shared' : 'private'; return { ...previous, goals: [...previous.goals, { id: newId(), ownerId: me, workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined, title, description: 'A new promise to yourself.', visibility: safeVisibility, progress: 0, deadline: 'No deadline', priority: 'medium', category: 'Personal', milestones: [] }] }; }),
-      toggleMilestone: (goalId, milestoneId) => update((previous) => ({ ...previous, goals: previous.goals.map((goal) => { if (goal.id !== goalId) return goal; const milestones = goal.milestones.map((milestone) => milestone.id === milestoneId ? { ...milestone, complete: !milestone.complete } : milestone); const progress = milestones.length ? Math.round((milestones.filter((milestone) => milestone.complete).length / milestones.length) * 100) : goal.progress; feedback.success(previous.user.settings.preferences.haptics); feedback.sound(progress === 100 ? 'goalComplete' : 'success', previous.user.settings.preferences.sfx); return { ...goal, milestones, progress }; }) })),
-      updateNotifications: (patch) => update((previous) => { const notifications = { ...previous.user.settings.notifications, ...patch }; localNotificationScheduler.sync(notifications).catch(() => undefined); return { ...previous, user: { ...previous.user, settings: { ...previous.user.settings, notifications } } }; }),
-      updatePreferences: (patch) => { if (patch.sfx !== undefined) void sfx.setEnabled(patch.sfx); update((previous) => ({ ...previous, user: { ...previous.user, settings: { ...previous.user.settings, preferences: { ...previous.user.settings.preferences, ...patch } } } })); },
-      sendMessage: (content, conversation, type = 'text', attachment) => update((previous) => { feedback.tap(previous.user.settings.preferences.haptics); feedback.sound('send', previous.user.settings.preferences.sfx); const message: Message = { id: newId(), conversationId: conversation, senderId: me, type, content: conversation === 'journal' ? journalCrypto.encrypt(content) : content, timestamp: stamp(), status: 'sent', ...attachment }; return conversation === 'journal' ? { ...previous, journal: [...previous.journal, message] } : { ...previous, messages: [...previous.messages, message] }; }),
-      addMeal: (meal) => update((previous) => ({ ...previous, meals: [...previous.meals, { ...meal, id: newId(), ownerId: me, date: previous.activeDay, workspaceId: meal.visibility === 'shared' ? previous.workspace?.id : undefined }] })), dailyRecap: () => ({ date: state.activeDay, you: dailyPercent, shared: state.workspace ? sharedDailyPercent : undefined }),
-    };
-  }, [state, hydrated]); return <Context.Provider value={value}>{children}</Context.Provider>;
+const storageKey = 'evoryz.local-state.v3';
+const stamp = () => new Date().toISOString();
+const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+const notificationDefaults: NotificationSettings = {
+  enabled: true,
+  dailyReminder: true,
+  recapReminder: true,
+  reminderTime: '08:00',
+};
+
+const defaultPreferences = {
+  defaultVisibility: 'private' as Visibility,
+  theme: 'dark' as const,
+  haptics: true,
+  sfx: true,
+};
+
+function defaultUser(id = 'unauthenticated'): User {
+  return {
+    id,
+    name: 'EvoRyz Member',
+    username: 'member',
+    avatar: 'E',
+    settings: {
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      notifications: notificationDefaults,
+      preferences: defaultPreferences,
+    },
+  };
 }
-export function useApp() { const value = useContext(Context); if (!value) throw new Error('AppProvider missing'); return value; }
+
+/** Fresh account seed: Exactly ONE starter task, ONE habit, ONE goal, ZERO meals, ZERO fake journal/chat/history */
+function seed(day: string, ownerId: string) {
+  return {
+    tasks: [
+      {
+        id: 't1',
+        ownerId,
+        title: 'Welcome to EvoRyz — tap to complete',
+        visibility: 'private' as Visibility,
+        date: day,
+        completed: false,
+        category: 'Personal',
+        streak: 0,
+      },
+    ] as DailyTask[],
+    habits: [
+      {
+        id: 'h1',
+        ownerId,
+        name: 'Morning focus session',
+        type: 'build' as const,
+        visibility: 'private' as Visibility,
+        frequency: 'daily' as const,
+        currentStreak: 0,
+        bestStreak: 0,
+        history: [],
+        completedToday: false,
+      },
+    ] as Habit[],
+    goals: [
+      {
+        id: 'g1',
+        ownerId,
+        title: 'Achieve my core goal',
+        description: 'Break down your vision into weekly wins.',
+        visibility: 'private' as Visibility,
+        progress: 0,
+        deadline: 'In 30 days',
+        priority: 'medium' as const,
+        category: 'Personal',
+        milestones: [{ id: 'm1', title: 'Define scope & first milestone', complete: false }],
+      },
+    ] as Goal[],
+    meals: [] as Meal[],
+    messages: [] as Message[],
+    journal: [] as JournalEntry[],
+    activities: [] as ActivityEvent[],
+  };
+}
+
+type State = ReturnType<typeof seed> & {
+  user: User;
+  activeDay: string;
+  summaries: DailySummary[];
+  hasCompletedSetup: boolean;
+  mode?: UsageMode;
+  workspace?: Workspace;
+  journalSecurity?: JournalSecurityConfig | null;
+};
+
+const initial = (userId = 'unauthenticated'): State => ({
+  user: defaultUser(userId),
+  activeDay: evoryzDay(),
+  summaries: [],
+  hasCompletedSetup: false,
+  journalSecurity: null,
+  ...seed(evoryzDay(), userId),
+});
+
+type Ctx = State & {
+  hydrated: boolean;
+  session: Session | null;
+  dailyPercent: number;
+  sharedDailyPercent: number;
+  streak: number;
+  hasWorkspace: boolean;
+  workspaceLabel: string;
+  isJournalUnlocked: boolean;
+  decryptedJournalEntries: { id: string; plaintext: string; timestamp: string; date: string }[];
+  configureMode: (mode: UsageMode, name?: string) => void;
+  signOut: () => Promise<void>;
+  toggleTask: (id: string) => void;
+  addTask: (title: string, visibility: Visibility) => void;
+  deleteTask: (id: string) => void;
+  toggleHabit: (id: string) => void;
+  addHabit: (name: string, type: Habit['type'], visibility: Visibility) => void;
+  deleteHabit: (id: string) => void;
+  addGoal: (title: string, visibility: Visibility) => void;
+  toggleMilestone: (goalId: string, milestoneId: string) => void;
+  deleteGoal: (id: string) => void;
+  updateNotifications: (patch: Partial<NotificationSettings>) => void;
+  updatePreferences: (patch: Partial<User['settings']['preferences']>) => void;
+  sendMessage: (
+    content: string,
+    conversation: string,
+    type?: Message['type'],
+    attachment?: Pick<
+      Message,
+      'uri' | 'thumbnailUri' | 'attachmentName' | 'mimeType' | 'size' | 'width' | 'height' | 'duration'
+    >
+  ) => void;
+  addMeal: (meal: Omit<Meal, 'id' | 'ownerId' | 'date' | 'workspaceId'>) => void;
+  deleteMeal: (id: string) => void;
+  dailyRecap: () => DailySummary;
+  // Journal Security & Content Methods
+  unlockJournal: (pin: string) => Promise<{ success: boolean; error?: string }>;
+  lockJournal: () => void;
+  setupJournalPin: (pin: string) => Promise<void>;
+  changeJournalPin: (currentPin: string, newPin: string) => Promise<{ success: boolean; error?: string }>;
+  resetJournalPin: (newPin: string) => Promise<void>;
+  addJournalEntry: (content: string) => Promise<void>;
+  deleteJournalEntry: (id: string) => Promise<void>;
+};
+
+const Context = createContext<Ctx | null>(null);
+
+function rollover(state: State): State {
+  const today = evoryzDay();
+  if (state.activeDay === today) return state;
+
+  const summary = {
+    date: state.activeDay,
+    you: completionPercent(state.tasks),
+    shared: state.workspace ? sharedPercent(state.tasks) : undefined,
+  };
+
+  return {
+    ...state,
+    activeDay: today,
+    summaries: [...state.summaries, summary].slice(-7),
+    tasks: state.tasks.map((task) => ({ ...task, date: today, completed: false })),
+    habits: state.habits.map((habit) => ({
+      ...habit,
+      currentStreak: habit.completedToday ? habit.currentStreak : 0,
+      completedToday: false,
+    })),
+    activities: [],
+  };
+}
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<State>(initial());
+  const [session, setSession] = useState<Session | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [isJournalUnlocked, setIsJournalUnlocked] = useState(false);
+  const [decryptedEntries, setDecryptedEntries] = useState<
+    { id: string; plaintext: string; timestamp: string; date: string }[]
+  >([]);
+
+  // 1. Hydrate local cached state and sound effects on launch
+  useEffect(() => {
+    AsyncStorage.getItem(storageKey)
+      .then((saved) => {
+        if (saved) {
+          const stored = JSON.parse(saved) as Partial<State>;
+          setState((prev) => rollover({
+            ...prev,
+            ...stored,
+            meals: stored.meals ?? [],
+            journal: stored.journal ?? [],
+            user: {
+              ...prev.user,
+              ...stored.user,
+              settings: {
+                ...prev.user.settings,
+                ...stored.user?.settings,
+                preferences: {
+                  ...prev.user.settings.preferences,
+                  ...stored.user?.settings?.preferences,
+                },
+                notifications: {
+                  ...notificationDefaults,
+                  ...stored.user?.settings?.notifications,
+                },
+              },
+            },
+          }));
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setHydrated(true));
+  }, []);
+
+  useEffect(() => {
+    void sfx.hydrate();
+    return () => sfx.dispose();
+  }, []);
+
+  // 2. Persist state to local AsyncStorage
+  useEffect(() => {
+    if (hydrated) {
+      AsyncStorage.setItem(storageKey, JSON.stringify(state)).catch(() => undefined);
+    }
+  }, [state, hydrated]);
+
+  const syncAuthenticatedUser = async (userSession: Session) => {
+    const sUser = userSession.user;
+    const uid = sUser.id;
+    const email = sUser.email;
+    const fullName =
+      sUser.user_metadata?.full_name ||
+      sUser.user_metadata?.name ||
+      email?.split('@')[0] ||
+      'EvoRyz User';
+    const username =
+      sUser.user_metadata?.user_name ||
+      email?.split('@')[0] ||
+      'user';
+    const avatar =
+      sUser.user_metadata?.avatar_url ||
+      sUser.user_metadata?.picture ||
+      fullName.charAt(0).toUpperCase() ||
+      'U';
+
+    const authenticatedUser: User = {
+      id: uid,
+      email,
+      name: fullName,
+      username,
+      avatar,
+      settings: {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        notifications: notificationDefaults,
+        preferences: defaultPreferences,
+      },
+    };
+
+    // Update state with real user ID and migrate items
+    setState((prev) => ({
+      ...prev,
+      user: { ...prev.user, ...authenticatedUser },
+      hasCompletedSetup: true,
+      tasks: prev.tasks.map((t) => (t.ownerId === 'me' || t.ownerId === 'unauthenticated' ? { ...t, ownerId: uid } : t)),
+      habits: prev.habits.map((h) => (h.ownerId === 'me' || h.ownerId === 'unauthenticated' ? { ...h, ownerId: uid } : h)),
+      goals: prev.goals.map((g) => (g.ownerId === 'me' || g.ownerId === 'unauthenticated' ? { ...g, ownerId: uid } : g)),
+      meals: prev.meals.map((m) => (m.ownerId === 'me' || m.ownerId === 'unauthenticated' ? { ...m, ownerId: uid } : m)),
+      journal: prev.journal.map((j) => (j.ownerId === 'me' || j.ownerId === 'unauthenticated' ? { ...j, ownerId: uid } : j)),
+    }));
+
+    // Upsert profile in Supabase
+    void supabaseRepo.upsertProfile({
+      id: uid,
+      email,
+      name: fullName,
+      username,
+      avatar,
+    });
+
+    // Fetch cloud data
+    try {
+      const today = evoryzDay();
+      const [dbTasks, dbHabits, dbGoals, dbMeals, dbJournal, dbSecurity, dbWorkspace] = await Promise.all([
+        supabaseRepo.fetchTasks(uid, today),
+        supabaseRepo.fetchHabits(uid),
+        supabaseRepo.fetchGoals(uid),
+        supabaseRepo.fetchMeals(uid, today),
+        supabaseRepo.fetchJournalEntries(uid),
+        supabaseRepo.fetchJournalSecurity(uid),
+        supabaseRepo.fetchUserWorkspace(uid),
+      ]);
+
+      setState((prev) => ({
+        ...prev,
+        tasks: dbTasks.length ? dbTasks : prev.tasks,
+        habits: dbHabits.length ? dbHabits : prev.habits,
+        goals: dbGoals.length ? dbGoals : prev.goals,
+        meals: dbMeals.length ? dbMeals : prev.meals,
+        journal: dbJournal.length ? dbJournal : prev.journal,
+        journalSecurity: dbSecurity ?? prev.journalSecurity,
+        workspace: dbWorkspace ?? prev.workspace,
+      }));
+    } catch (err) {
+      console.warn('[AppContext] Cloud sync error:', err);
+    }
+  };
+
+  // 3. Supabase Auth Session listener
+  useEffect(() => {
+    authService.getSession().then((initialSession) => {
+      if (initialSession) {
+        setSession(initialSession);
+        syncAuthenticatedUser(initialSession);
+      }
+    });
+
+    const sub = authService.onAuthStateChange((newSession) => {
+      setSession(newSession);
+      if (newSession) {
+        syncAuthenticatedUser(newSession);
+      } else {
+        // User logged out
+        setState(initial('unauthenticated'));
+        journalCrypto.lock();
+        setIsJournalUnlocked(false);
+        setDecryptedEntries([]);
+      }
+    });
+
+    return () => {
+      sub.unsubscribe();
+    };
+  }, []);
+
+  // 4. Subscribe to Realtime messages when workspace is active
+  useEffect(() => {
+    if (!state.workspace?.id) return;
+
+    const unsubscribe = supabaseRepo.subscribeToMessages('workspace', (newMsg) => {
+      setState((prev) => {
+        if (prev.messages.some((m) => m.id === newMsg.id)) return prev;
+        return {
+          ...prev,
+          messages: [...prev.messages, newMsg],
+        };
+      });
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [state.workspace?.id]);
+
+  const value = useMemo<Ctx>(() => {
+    const update = (recipe: (previous: State) => State) =>
+      setState((previous) => recipe(rollover(previous)));
+
+    const dailyPercent = completionPercent(state.tasks);
+    const sharedDailyPercent = sharedPercent(state.tasks);
+    const streak = Math.max(0, ...state.habits.map((habit) => habit.currentStreak));
+    const hasWorkspace = Boolean(state.workspace);
+    const workspaceLabel = state.workspace?.name ?? 'Solo';
+
+    return {
+      ...state,
+      hydrated,
+      session,
+      dailyPercent,
+      sharedDailyPercent,
+      streak,
+      hasWorkspace,
+      workspaceLabel,
+      isJournalUnlocked,
+      decryptedJournalEntries: decryptedEntries,
+
+      configureMode: (mode, name) =>
+        update((previous) => {
+          if (mode === 'solo') {
+            return {
+              ...previous,
+              mode,
+              workspace: undefined,
+              hasCompletedSetup: true,
+              tasks: previous.tasks.map((item) => ({
+                ...item,
+                visibility: 'private',
+                workspaceId: undefined,
+              })),
+              habits: previous.habits.map((item) => ({
+                ...item,
+                visibility: 'private',
+                workspaceId: undefined,
+              })),
+              goals: previous.goals.map((item) => ({
+                ...item,
+                visibility: 'private',
+                workspaceId: undefined,
+              })),
+              messages: [],
+              activities: [],
+            };
+          }
+          const workspaceId = newId();
+          const members = [
+            { id: previous.user.id, name: previous.user.name, avatar: previous.user.avatar },
+          ];
+          const workspace: Workspace = {
+            id: workspaceId,
+            mode,
+            name: name?.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
+            inviteCode: `EVR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+            members,
+          };
+          return { ...previous, mode, workspace, hasCompletedSetup: true };
+        }),
+
+      signOut: async () => {
+        await authService.signOut();
+        journalCrypto.lock();
+        setIsJournalUnlocked(false);
+        setDecryptedEntries([]);
+        setState(initial('unauthenticated'));
+        await AsyncStorage.removeItem(storageKey);
+      },
+
+      toggleTask: (taskId) =>
+        update((previous) => {
+          const task = previous.tasks.find((item) => item.id === taskId);
+          if (!task) return previous;
+          const completed = !task.completed;
+          if (completed) feedback.success(previous.user.settings.preferences.haptics);
+          else feedback.tap(previous.user.settings.preferences.haptics);
+          feedback.sound(completed ? 'taskComplete' : 'tap', previous.user.settings.preferences.sfx);
+
+          const updatedTask = { ...task, completed };
+          void supabaseRepo.upsertTask(updatedTask);
+
+          const activities =
+            task.visibility === 'shared' && previous.workspace
+              ? [
+                  {
+                    id: newId(),
+                    userId: previous.user.id,
+                    workspaceId: previous.workspace.id,
+                    type: 'completed' as const,
+                    title: completed ? task.title : `reopened ${task.title}`,
+                    visibility: 'shared' as const,
+                    timestamp: stamp(),
+                  },
+                  ...previous.activities,
+                ].slice(0, 30)
+              : previous.activities;
+
+          return {
+            ...previous,
+            tasks: previous.tasks.map((item) => (item.id === taskId ? updatedTask : item)),
+            activities,
+          };
+        }),
+
+      addTask: (title, visibility) =>
+        update((previous) => {
+          const desired = visibility ?? previous.user.settings.preferences.defaultVisibility;
+          const safeVisibility = previous.workspace && desired === 'shared' ? 'shared' : 'private';
+          const newTask: DailyTask = {
+            id: newId(),
+            ownerId: previous.user.id,
+            workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined,
+            title,
+            visibility: safeVisibility,
+            date: previous.activeDay,
+            completed: false,
+          };
+          void supabaseRepo.upsertTask(newTask);
+          return { ...previous, tasks: [...previous.tasks, newTask] };
+        }),
+
+      deleteTask: (taskId) =>
+        update((previous) => {
+          void supabaseRepo.deleteTask(taskId);
+          return { ...previous, tasks: previous.tasks.filter((t) => t.id !== taskId) };
+        }),
+
+      toggleHabit: (habitId) =>
+        update((previous) => ({
+          ...previous,
+          habits: previous.habits.map((habit) => {
+            if (habit.id !== habitId) return habit;
+            const completedToday = !habit.completedToday;
+            const currentStreak = completedToday
+              ? habit.currentStreak + 1
+              : Math.max(0, habit.currentStreak - 1);
+            if (completedToday) {
+              feedback.success(previous.user.settings.preferences.haptics);
+              feedback.sound(
+                [5, 7, 10, 14, 21, 30].includes(currentStreak)
+                  ? 'streakMilestone'
+                  : 'habitComplete',
+                previous.user.settings.preferences.sfx
+              );
+            }
+            const updatedHabit = {
+              ...habit,
+              completedToday,
+              currentStreak,
+              bestStreak: Math.max(habit.bestStreak, currentStreak),
+              history: completedToday
+                ? [...habit.history, previous.activeDay]
+                : habit.history.filter((date) => date !== previous.activeDay),
+            };
+            void supabaseRepo.upsertHabit(updatedHabit);
+            return updatedHabit;
+          }),
+        })),
+
+      addHabit: (name, type, visibility) =>
+        update((previous) => {
+          const safeVisibility = previous.workspace && visibility === 'shared' ? 'shared' : 'private';
+          const newHabit: Habit = {
+            id: newId(),
+            ownerId: previous.user.id,
+            workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined,
+            name,
+            type,
+            visibility: safeVisibility,
+            frequency: 'daily',
+            currentStreak: 0,
+            bestStreak: 0,
+            history: [],
+            completedToday: false,
+          };
+          void supabaseRepo.upsertHabit(newHabit);
+          return { ...previous, habits: [...previous.habits, newHabit] };
+        }),
+
+      deleteHabit: (habitId) =>
+        update((previous) => {
+          void supabaseRepo.deleteHabit(habitId);
+          return { ...previous, habits: previous.habits.filter((h) => h.id !== habitId) };
+        }),
+
+      addGoal: (title, visibility) =>
+        update((previous) => {
+          const safeVisibility = previous.workspace && visibility === 'shared' ? 'shared' : 'private';
+          const newGoal: Goal = {
+            id: newId(),
+            ownerId: previous.user.id,
+            workspaceId: safeVisibility === 'shared' ? previous.workspace?.id : undefined,
+            title,
+            description: 'A promise to your future self.',
+            visibility: safeVisibility,
+            progress: 0,
+            deadline: 'In 30 days',
+            priority: 'medium',
+            category: 'Personal',
+            milestones: [],
+          };
+          void supabaseRepo.upsertGoal(newGoal);
+          return { ...previous, goals: [...previous.goals, newGoal] };
+        }),
+
+      toggleMilestone: (goalId, milestoneId) =>
+        update((previous) => ({
+          ...previous,
+          goals: previous.goals.map((goal) => {
+            if (goal.id !== goalId) return goal;
+            const milestones = goal.milestones.map((milestone) =>
+              milestone.id === milestoneId
+                ? { ...milestone, complete: !milestone.complete }
+                : milestone
+            );
+            const progress = milestones.length
+              ? Math.round(
+                  (milestones.filter((milestone) => milestone.complete).length / milestones.length) * 100
+                )
+              : goal.progress;
+            feedback.success(previous.user.settings.preferences.haptics);
+            feedback.sound(progress === 100 ? 'goalComplete' : 'success', previous.user.settings.preferences.sfx);
+            const updatedGoal = { ...goal, milestones, progress };
+            void supabaseRepo.upsertGoal(updatedGoal);
+            return updatedGoal;
+          }),
+        })),
+
+      deleteGoal: (goalId) =>
+        update((previous) => {
+          void supabaseRepo.deleteGoal(goalId);
+          return { ...previous, goals: previous.goals.filter((g) => g.id !== goalId) };
+        }),
+
+      updateNotifications: (patch) =>
+        update((previous) => {
+          const notifications = { ...previous.user.settings.notifications, ...patch };
+          localNotificationScheduler.sync(notifications).catch(() => undefined);
+          return {
+            ...previous,
+            user: {
+              ...previous.user,
+              settings: { ...previous.user.settings, notifications },
+            },
+          };
+        }),
+
+      updatePreferences: (patch) => {
+        if (patch.sfx !== undefined) void sfx.setEnabled(patch.sfx);
+        update((previous) => ({
+          ...previous,
+          user: {
+            ...previous.user,
+            settings: {
+              ...previous.user.settings,
+              preferences: { ...previous.user.settings.preferences, ...patch },
+            },
+          },
+        }));
+      },
+
+      sendMessage: (content, conversation, type = 'text', attachment) =>
+        update((previous) => {
+          feedback.tap(previous.user.settings.preferences.haptics);
+          feedback.sound('send', previous.user.settings.preferences.sfx);
+
+          const message: Message = {
+            id: newId(),
+            workspaceId: previous.workspace?.id,
+            conversationId: conversation,
+            senderId: previous.user.id,
+            senderName: previous.user.name,
+            type,
+            content,
+            timestamp: stamp(),
+            status: 'sent',
+            ...attachment,
+          };
+
+          if (conversation === 'workspace') {
+            void supabaseRepo.insertMessage(message);
+          }
+
+          return { ...previous, messages: [...previous.messages, message] };
+        }),
+
+      addMeal: (meal) =>
+        update((previous) => {
+          const newMeal: Meal = {
+            ...meal,
+            id: newId(),
+            ownerId: previous.user.id,
+            date: previous.activeDay,
+            workspaceId: meal.visibility === 'shared' ? previous.workspace?.id : undefined,
+          };
+          void supabaseRepo.insertMeal(newMeal);
+          return { ...previous, meals: [...previous.meals, newMeal] };
+        }),
+
+      deleteMeal: (mealId) =>
+        update((previous) => {
+          void supabaseRepo.deleteMeal(mealId);
+          return { ...previous, meals: previous.meals.filter((m) => m.id !== mealId) };
+        }),
+
+      dailyRecap: () => ({
+        date: state.activeDay,
+        you: dailyPercent,
+        shared: state.workspace ? sharedDailyPercent : undefined,
+      }),
+
+      // ----------------------------------------------------------------------
+      // JOURNAL SECURITY & ENCRYPTED CONTENT
+      // ----------------------------------------------------------------------
+      unlockJournal: async (pin: string) => {
+        const currentSec = state.journalSecurity;
+        if (!currentSec) {
+          return { success: false, error: 'Journal PIN has not been configured yet.' };
+        }
+
+        const res = await journalCrypto.verifyPin(pin, currentSec);
+        if (!res.success) {
+          if (res.updatedSecurity) {
+            update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
+            void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+          }
+          return { success: false, error: res.error };
+        }
+
+        // Successfully verified: decrypt all entries into in-memory array
+        const decrypted: { id: string; plaintext: string; timestamp: string; date: string }[] = [];
+        for (const entry of state.journal) {
+          try {
+            const pt = await journalCrypto.decrypt({
+              ciphertext: entry.encryptedContent,
+              iv: entry.iv,
+              algorithm: entry.algorithm,
+            });
+            decrypted.push({
+              id: entry.id,
+              plaintext: pt,
+              timestamp: entry.timestamp,
+              date: entry.date,
+            });
+          } catch {
+            decrypted.push({
+              id: entry.id,
+              plaintext: '[Encrypted Entry — Key Mismatch]',
+              timestamp: entry.timestamp,
+              date: entry.date,
+            });
+          }
+        }
+
+        setIsJournalUnlocked(true);
+        setDecryptedEntries(decrypted);
+
+        if (res.updatedSecurity) {
+          update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
+          void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+        }
+
+        return { success: true };
+      },
+
+      lockJournal: () => {
+        journalCrypto.lock();
+        setIsJournalUnlocked(false);
+        setDecryptedEntries([]);
+      },
+
+      setupJournalPin: async (pin: string) => {
+        const securityConfig = await journalCrypto.setupPin(pin);
+        setIsJournalUnlocked(true);
+        update((p) => ({ ...p, journalSecurity: securityConfig }));
+        void supabaseRepo.saveJournalSecurity(state.user.id, securityConfig);
+      },
+
+      changeJournalPin: async (currentPin: string, newPin: string) => {
+        if (!state.journalSecurity) {
+          return { success: false, error: 'No PIN set.' };
+        }
+
+        const payloads: { id: string; payload: EncryptedPayload }[] = state.journal.map((j) => ({
+          id: j.id,
+          payload: { ciphertext: j.encryptedContent, iv: j.iv, algorithm: j.algorithm },
+        }));
+
+        const result = await journalCrypto.changePin(currentPin, newPin, state.journalSecurity, payloads);
+        if (!result.success || !result.updatedSecurity) {
+          return { success: false, error: result.error || 'Failed to change PIN.' };
+        }
+
+        // Update entries with re-encrypted payloads
+        if (result.reEncryptedPayloads) {
+          const payloadMap = new Map(result.reEncryptedPayloads.map((r) => [r.id, r.payload]));
+          update((p) => ({
+            ...p,
+            journalSecurity: result.updatedSecurity,
+            journal: p.journal.map((j) => {
+              const np = payloadMap.get(j.id);
+              if (np) {
+                void supabaseRepo.updateJournalEntry(j.id, np.ciphertext, np.iv);
+                return { ...j, encryptedContent: np.ciphertext, iv: np.iv };
+              }
+              return j;
+            }),
+          }));
+        } else {
+          update((p) => ({ ...p, journalSecurity: result.updatedSecurity }));
+        }
+
+        void supabaseRepo.saveJournalSecurity(state.user.id, result.updatedSecurity);
+        return { success: true };
+      },
+
+      resetJournalPin: async (newPin: string) => {
+        const securityConfig = await journalCrypto.resetPinThroughAuth(newPin);
+        setIsJournalUnlocked(true);
+        update((p) => ({ ...p, journalSecurity: securityConfig }));
+        void supabaseRepo.saveJournalSecurity(state.user.id, securityConfig);
+      },
+
+      addJournalEntry: async (content: string) => {
+        const encPayload = await journalCrypto.encrypt(content);
+        const newEntry: JournalEntry = {
+          id: newId(),
+          ownerId: state.user.id,
+          encryptedContent: encPayload.ciphertext,
+          iv: encPayload.iv,
+          algorithm: encPayload.algorithm,
+          date: state.activeDay,
+          timestamp: stamp(),
+        };
+
+        void supabaseRepo.insertJournalEntry(newEntry);
+
+        setDecryptedEntries((prev) => [
+          ...prev,
+          {
+            id: newEntry.id,
+            plaintext: content,
+            timestamp: newEntry.timestamp,
+            date: newEntry.date,
+          },
+        ]);
+
+        update((p) => ({ ...p, journal: [...p.journal, newEntry] }));
+      },
+
+      deleteJournalEntry: async (id: string) => {
+        void supabaseRepo.deleteJournalEntry(id);
+        setDecryptedEntries((prev) => prev.filter((e) => e.id !== id));
+        update((p) => ({ ...p, journal: p.journal.filter((j) => j.id !== id) }));
+      },
+    };
+  }, [state, session, hydrated, isJournalUnlocked, decryptedEntries]);
+
+  return <Context.Provider value={value}>{children}</Context.Provider>;
+}
+
+export function useApp() {
+  const value = useContext(Context);
+  if (!value) throw new Error('AppProvider missing');
+  return value;
+}

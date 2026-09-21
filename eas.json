@@ -5,6 +5,10 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://dluhdtnxikygemuwaxpc.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_KEY": "sb_publishable_ijEMH8hfK_XUolBCC-ZbYA_MCiccEHg"
+      },
       "android": {
         "buildType": "apk"
       }

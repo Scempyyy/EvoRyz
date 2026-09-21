@@ -1,3 +1,83 @@
-import { router } from 'expo-router'; import { View, Text, Pressable, StyleSheet } from 'react-native'; import { SafeAreaView } from 'react-native-safe-area-context'; import { LinearGradient } from 'expo-linear-gradient'; import { colors } from '@/src/theme';
-export default function Welcome(){return <LinearGradient colors={[colors.bg,'#161331']} style={s.root}><SafeAreaView style={s.safe}><View style={s.mark}><Text style={s.logo}>EvoRyz</Text><Text style={s.tag}>Evolve. Rise. Repeat.</Text></View><View><Text style={s.title}>Grow on your{`\n`}terms.</Text><Text style={s.copy}>A private space for your goals, whether you grow solo, with a duo, or as a team.</Text><Pressable style={s.primary} onPress={()=>router.push('/auth')}><Text style={s.primaryText}>Get started</Text></Pressable><Pressable style={s.secondary} onPress={()=>router.push('/auth?login=1')}><Text style={s.secondaryText}>I already have an account</Text></Pressable></View></SafeAreaView></LinearGradient>};
-const s=StyleSheet.create({root:{flex:1},safe:{flex:1,justifyContent:'space-between',padding:28},mark:{marginTop:38},logo:{color:'white',fontSize:38,fontWeight:'800',letterSpacing:-1},tag:{color:colors.muted,fontSize:15,marginTop:6},title:{color:'white',fontSize:42,fontWeight:'800',lineHeight:48,letterSpacing:-1,marginBottom:16},copy:{color:colors.muted,fontSize:16,lineHeight:24,marginBottom:30},primary:{backgroundColor:colors.violet,padding:17,borderRadius:16,alignItems:'center'},primaryText:{color:'white',fontWeight:'800',fontSize:16},secondary:{padding:17,alignItems:'center',marginTop:6},secondaryText:{color:'#d4ccff',fontWeight:'700'}});
+import { router } from 'expo-router';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import { colors } from '@/src/theme';
+import { EvoRyzLogo } from '@/src/components/EvoRyzLogo';
+
+export default function Welcome() {
+  return (
+    <LinearGradient colors={[colors.bg, '#141026', '#090812']} style={s.root}>
+      <SafeAreaView style={s.safe}>
+        <View style={s.mark}>
+          <EvoRyzLogo size={68} showWordmark={true} showTagline={true} />
+        </View>
+
+        <View style={s.bottom}>
+          <Text style={s.title}>
+            Grow on your{`\n`}terms.
+          </Text>
+          <Text style={s.copy}>
+            A private space for your goals, habits, and daily focus — whether you grow solo, with a duo, or as a team.
+          </Text>
+
+          <Pressable
+            style={s.primary}
+            onPress={() => router.push('/auth')}
+            accessibilityLabel="Get started"
+          >
+            <Text style={s.primaryText}>Continue with Google</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </LinearGradient>
+  );
+}
+
+const s = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  safe: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: 28,
+  },
+  mark: {
+    alignItems: 'center',
+    marginTop: 40,
+  },
+  bottom: {
+    marginBottom: 16,
+  },
+  title: {
+    color: 'white',
+    fontSize: 40,
+    fontWeight: '800',
+    lineHeight: 46,
+    letterSpacing: -1,
+    marginBottom: 14,
+  },
+  copy: {
+    color: '#9CA3AF',
+    fontSize: 15,
+    lineHeight: 23,
+    marginBottom: 28,
+  },
+  primary: {
+    backgroundColor: colors.violet,
+    paddingVertical: 17,
+    borderRadius: 16,
+    alignItems: 'center',
+    shadowColor: colors.violet,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  primaryText: {
+    color: 'white',
+    fontWeight: '800',
+    fontSize: 16,
+  },
+});
