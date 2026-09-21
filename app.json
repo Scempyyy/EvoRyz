@@ -1,3 +1,38 @@
 {
-  "expo": { "name": "EvoRyz", "slug": "evoryz", "version": "1.0.0", "orientation": "portrait", "scheme": "evoryz", "userInterfaceStyle": "dark", "android": { "package": "com.evoryz.app" }, "plugins": ["expo-router", "expo-image-picker", ["expo-audio", { "microphonePermission": "Allow EvoRyz to record voice notes." }]], "experiments": { "typedRoutes": true } }
+  "expo": {
+    "name": "EvoRyz",
+    "slug": "evoryz",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "evoryz",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.evoryz.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-image-picker",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow EvoRyz to record voice notes."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "238409a4-bc1e-44ac-98b3-23a05b34ff0c"
+      }
+    }
+  }
 }

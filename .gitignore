@@ -5,3 +5,18 @@
 expo-env.d.ts
 # @end expo-cli
 .expo/
+
+.env.local
+
+node_modules/
+
+
+.env.local
+
+node_modules/
+.env.local
+
+node_modules/
+
+# Expo local state
+
