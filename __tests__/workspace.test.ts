@@ -114,4 +114,44 @@ describe('Workspace Lifecycle & Invite System', () => {
     });
     expect(success).toBe(true);
   });
+
+  describe('Username Update & Validation', () => {
+    it('rejects invalid length or illegal characters', async () => {
+      const tooShort = await supabaseRepo.updateUsername(mockUserId, 'ab');
+      expect(tooShort.success).toBe(false);
+      expect(tooShort.error).toContain('3 and 20 characters');
+
+      const tooLong = await supabaseRepo.updateUsername(mockUserId, 'a'.repeat(21));
+      expect(tooLong.success).toBe(false);
+      expect(tooLong.error).toContain('3 and 20 characters');
+
+      const illegalChars = await supabaseRepo.updateUsername(mockUserId, 'user@name!');
+      expect(illegalChars.success).toBe(false);
+      expect(illegalChars.error).toContain('letters, numbers, and underscores');
+    });
+
+    it('successfully calls update_username RPC and trims/lowercases input', async () => {
+      (supabase.rpc as jest.Mock).mockResolvedValueOnce({
+        data: { success: true, username: 'valid_user123' },
+        error: null,
+      });
+
+      const res = await supabaseRepo.updateUsername(mockUserId, '  Valid_User123  ');
+      expect(supabase.rpc).toHaveBeenCalledWith('update_username', {
+        new_username: 'valid_user123',
+      });
+      expect(res.success).toBe(true);
+    });
+
+    it('handles unique conflict error from database', async () => {
+      (supabase.rpc as jest.Mock).mockResolvedValueOnce({
+        data: null,
+        error: { code: '23505', message: 'Username is already taken' },
+      });
+
+      const res = await supabaseRepo.updateUsername(mockUserId, 'taken_username');
+      expect(res.success).toBe(false);
+      expect(res.error).toBe('Username is already taken.');
+    });
+  });
 });

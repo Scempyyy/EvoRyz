@@ -9,6 +9,7 @@ import {
   Modal,
   TextInput,
   Alert,
+  Image,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Header, Card, Progress } from '@/src/components/ui';
@@ -30,6 +31,7 @@ export default function Profile() {
     createWorkspace,
     joinWorkspace,
     leaveWorkspace,
+    updateUsername,
     updateNotifications,
     updatePreferences,
     signOut,
@@ -40,7 +42,7 @@ export default function Profile() {
   } = useApp();
 
   const [activeModal, setActiveModal] = useState<
-    'account' | 'security' | 'privacy' | 'workspace' | 'data' | null
+    'account' | 'username' | 'security' | 'privacy' | 'workspace' | 'data' | null
   >(null);
 
   // Security PIN states
@@ -48,6 +50,15 @@ export default function Profile() {
   const [newPin, setNewPin] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinSuccess, setPinSuccess] = useState<string | null>(null);
+
+  // Username states
+  const [usernameInput, setUsernameInput] = useState('');
+  const [usernameLoading, setUsernameLoading] = useState(false);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [usernameSuccess, setUsernameSuccess] = useState<string | null>(null);
+
+  // Avatar error fallback state
+  const [avatarImgError, setAvatarImgError] = useState(false);
 
   // Workspace states
   const [joinCode, setJoinCode] = useState('');
@@ -107,6 +118,59 @@ export default function Profile() {
     }
   };
 
+  const handleSaveUsername = async () => {
+    const cleaned = usernameInput.trim().toLowerCase();
+    if (!cleaned) {
+      setUsernameError('Please enter a username.');
+      feedback.error(true);
+      return;
+    }
+    if (cleaned === user.username) {
+      setUsernameSuccess('Username is already set to @' + cleaned);
+      return;
+    }
+    if (cleaned.length < 3 || cleaned.length > 20) {
+      setUsernameError('Username must be between 3 and 20 characters.');
+      feedback.error(true);
+      return;
+    }
+    if (!/^[a-z0-9_]+$/.test(cleaned)) {
+      setUsernameError('Only letters, numbers, and underscores are allowed.');
+      feedback.error(true);
+      return;
+    }
+
+    setUsernameLoading(true);
+    setUsernameError(null);
+    setUsernameSuccess(null);
+
+    try {
+      const res = await updateUsername(cleaned);
+      if (!res.success) {
+        setUsernameError(res.error || 'Failed to update username.');
+        feedback.error(true);
+      } else {
+        setUsernameSuccess('Username updated to @' + cleaned);
+        feedback.success(true);
+        setTimeout(() => {
+          setActiveModal(null);
+          setUsernameSuccess(null);
+        }, 1200);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update username.';
+      setUsernameError(msg);
+      feedback.error(true);
+    } finally {
+      setUsernameLoading(false);
+    }
+  };
+
+  const isAvatarUrl = Boolean(
+    user.avatar && (user.avatar.startsWith('http://') || user.avatar.startsWith('https://'))
+  );
+  const initial = (user.name || user.username || 'E').charAt(0).toUpperCase();
+
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <Header title="Profile" sub="Your account & evolution" />
@@ -114,7 +178,16 @@ export default function Profile() {
       {/* User Card */}
       <Card style={s.person}>
         <View style={s.avatar}>
-          <Text style={s.avatarText}>{user.avatar}</Text>
+          {isAvatarUrl && !avatarImgError ? (
+            <Image
+              source={{ uri: user.avatar }}
+              style={s.avatarImage}
+              resizeMode="cover"
+              onError={() => setAvatarImgError(true)}
+            />
+          ) : (
+            <Text style={s.avatarText}>{initial}</Text>
+          )}
         </View>
         <Text style={s.name}>{user.name}</Text>
         <Text style={s.handle}>{user.email || `@${user.username}`}</Text>
@@ -208,6 +281,23 @@ export default function Profile() {
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </Pressable>
 
+      {/* 2. Change Username */}
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          setUsernameInput(user.username || '');
+          setUsernameError(null);
+          setUsernameSuccess(null);
+          setActiveModal('username');
+        }}
+      >
+        <View>
+          <Text style={s.settingText}>Username</Text>
+          <Text style={s.settingSub}>@{user.username || 'not set'}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </Pressable>
+
       {/* 2. Security */}
       <Pressable style={s.setting} onPress={() => setActiveModal('security')}>
         <View>
@@ -291,6 +381,71 @@ export default function Profile() {
               </Pressable>
               <Pressable style={s.modalAction} onPress={handleLogout}>
                 <Text style={s.modalActionText}>Sign Out</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change Username Modal */}
+      <Modal visible={activeModal === 'username'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>Change Username</Text>
+            <Text style={s.modalBody}>
+              Your unique handle within EvoRyz. 3–20 characters, letters, numbers, and underscores only.
+            </Text>
+
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Current</Text>
+              <Text style={s.modalVal}>@{user.username || 'not set'}</Text>
+            </View>
+
+            <Text style={s.inputLabel}>NEW USERNAME</Text>
+            <View style={s.usernameInputRow}>
+              <Text style={s.atSign}>@</Text>
+              <TextInput
+                value={usernameInput}
+                onChangeText={(t) => {
+                  setUsernameInput(t);
+                  setUsernameError(null);
+                  setUsernameSuccess(null);
+                }}
+                placeholder="new_username"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={20}
+                style={s.usernameInput}
+                editable={!usernameLoading}
+              />
+            </View>
+
+            {usernameError && <Text style={s.modalError}>{usernameError}</Text>}
+            {usernameSuccess && <Text style={s.modalSuccess}>{usernameSuccess}</Text>}
+
+            <View style={s.modalFooter}>
+              <Pressable
+                style={s.modalClose}
+                onPress={() => {
+                  setActiveModal(null);
+                  setUsernameError(null);
+                  setUsernameSuccess(null);
+                }}
+                disabled={usernameLoading}
+              >
+                <Text style={s.modalCloseText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  s.btnPrimary,
+                  { flex: 1, marginTop: 0 },
+                  (usernameLoading || !usernameInput.trim()) && { opacity: 0.5 },
+                ]}
+                disabled={usernameLoading || !usernameInput.trim()}
+                onPress={handleSaveUsername}
+              >
+                <Text style={s.btnPrimaryText}>{usernameLoading ? 'Saving…' : 'Save'}</Text>
               </Pressable>
             </View>
           </View>
@@ -581,7 +736,9 @@ const s = StyleSheet.create({
     backgroundColor: colors.violet,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
+  avatarImage: { width: '100%', height: '100%' },
   avatarText: { color: 'white', fontWeight: '900', fontSize: 28 },
   name: { color: 'white', fontWeight: '800', fontSize: 22, marginTop: 11 },
   handle: { color: colors.muted, marginTop: 3, fontSize: 13 },
@@ -708,4 +865,26 @@ const s = StyleSheet.create({
     borderRadius: 8,
   },
   pillButtonText: { color: 'white', fontSize: 11, fontWeight: '800' },
+  usernameInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  atSign: {
+    color: colors.violetLight,
+    fontWeight: '800',
+    fontSize: 16,
+    marginRight: 4,
+  },
+  usernameInput: {
+    flex: 1,
+    color: 'white',
+    paddingVertical: 12,
+    fontSize: 15,
+  },
 });

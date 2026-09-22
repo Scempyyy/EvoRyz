@@ -66,6 +66,69 @@ export class SupabaseRepository {
     }
   }
 
+  async updateUsername(
+    userId: string,
+    newUsername: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!isUUID(userId)) {
+      return { success: false, error: 'Invalid user session.' };
+    }
+
+    const cleaned = newUsername.trim().toLowerCase();
+    if (cleaned.length < 3 || cleaned.length > 20) {
+      return { success: false, error: 'Username must be between 3 and 20 characters.' };
+    }
+    if (!/^[a-z0-9_]+$/.test(cleaned)) {
+      return {
+        success: false,
+        error: 'Username may only contain letters, numbers, and underscores.',
+      };
+    }
+
+    try {
+      // 1. Attempt secure RPC first
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('update_username', {
+        new_username: cleaned,
+      });
+
+      if (!rpcErr && rpcData) {
+        return { success: true };
+      }
+
+      if (rpcErr) {
+        const msg = rpcErr.message || '';
+        if (msg.includes('already taken') || rpcErr.code === '23505') {
+          return { success: false, error: 'Username is already taken.' };
+        }
+        if (msg.includes('characters') || msg.includes('may only contain')) {
+          return { success: false, error: msg };
+        }
+      }
+
+      // 2. Fallback direct profile update
+      const { error: directErr } = await supabase
+        .from('profiles')
+        .update({ username: cleaned, updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (directErr) {
+        if (
+          directErr.code === '23505' ||
+          directErr.message?.includes('duplicate key') ||
+          directErr.message?.includes('unique')
+        ) {
+          return { success: false, error: 'Username is already taken.' };
+        }
+        return { success: false, error: directErr.message || 'Failed to update username.' };
+      }
+
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update username.';
+      return { success: false, error: msg };
+    }
+  }
+
   // --------------------------------------------------------------------------
   // TASKS
   // --------------------------------------------------------------------------

@@ -142,6 +142,7 @@ type Ctx = State & {
   createWorkspace: (name: string, mode: 'duo' | 'team') => Promise<{ success: boolean; error?: string }>;
   joinWorkspace: (inviteCode: string) => Promise<{ success: boolean; error?: string }>;
   leaveWorkspace: () => Promise<{ success: boolean; error?: string }>;
+  updateUsername: (newUsername: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
   toggleTask: (id: string) => void;
   addTask: (title: string, visibility: Visibility) => void;
@@ -629,6 +630,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
           })),
           messages: [],
           activities: [],
+        }));
+        return { success: true };
+      },
+
+      updateUsername: async (newUsername: string) => {
+        const cleaned = newUsername.trim().toLowerCase();
+        if (isUUID(state.user.id)) {
+          const res = await supabaseRepo.updateUsername(state.user.id, cleaned);
+          if (!res.success) {
+            return res;
+          }
+        }
+        update((p) => ({
+          ...p,
+          user: {
+            ...p.user,
+            username: cleaned,
+          },
         }));
         return { success: true };
       },

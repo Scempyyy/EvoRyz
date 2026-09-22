@@ -76,11 +76,20 @@ function getRandomBytes(count: number): string {
   try {
     return forge.random.getBytesSync(count);
   } catch {
-    let binary = '';
-    for (let i = 0; i < count; i++) {
-      binary += String.fromCharCode(Math.floor(Math.random() * 256));
+    try {
+      const seedArr: number[] = [];
+      for (let i = 0; i < 32; i++) {
+        seedArr.push(Math.floor(Math.random() * 256));
+      }
+      forge.random.collect(String.fromCharCode(...seedArr));
+      return forge.random.getBytesSync(count);
+    } catch {
+      let binary = '';
+      for (let i = 0; i < count; i++) {
+        binary += String.fromCharCode(Math.floor(Math.random() * 256));
+      }
+      return binary;
     }
-    return binary;
   }
 }
 
@@ -124,7 +133,7 @@ class JournalCryptoService {
     const salt = toHex(saltBytes);
 
     // Derive active key
-    const derivedKey = this.deriveAesKey(pin, saltBytes);
+    const derivedKey = await this.deriveAesKey(pin, saltBytes);
     const verifierHash = toHex(derivedKey);
 
     this.activeKeyBytes = derivedKey;
@@ -177,7 +186,7 @@ class JournalCryptoService {
         return { success: false, error: 'Corrupted security salt.' };
       }
 
-      const derivedKey = this.deriveAesKey(pin, saltBytes);
+      const derivedKey = await this.deriveAesKey(pin, saltBytes);
       const computedHash = toHex(derivedKey);
 
       if (constantTimeEqual(computedHash, security.verifierHash)) {
@@ -269,7 +278,7 @@ class JournalCryptoService {
       // 2. Set up new PIN security parameters
       const newSaltBytes = getRandomBytes(16);
       const newSalt = toHex(newSaltBytes);
-      const newKey = this.deriveAesKey(newPin, newSaltBytes);
+      const newKey = await this.deriveAesKey(newPin, newSaltBytes);
       const newVerifierHash = toHex(newKey);
 
       // 3. Re-encrypt decrypted items with new key
@@ -404,13 +413,19 @@ class JournalCryptoService {
     }
   }
 
-  private deriveVerifierHash(pin: string, saltBytes: string): string {
-    const derived = forge.pkcs5.pbkdf2(pin, saltBytes, this.ITERATIONS, 32, 'sha256');
-    return toHex(derived);
-  }
+  private async deriveAesKey(pin: string, saltBytes: string): Promise<string> {
+    // Yield execution to the JS event loop so UI renders loading state smoothly
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
-  private deriveAesKey(pin: string, saltBytes: string): string {
-    return forge.pkcs5.pbkdf2(pin, saltBytes, this.ITERATIONS, 32, 'sha256');
+    return new Promise<string>((resolve, reject) => {
+      forge.pkcs5.pbkdf2(pin, saltBytes, this.ITERATIONS, 32, 'sha256', (err: unknown, key: string) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(key);
+        }
+      });
+    });
   }
 }
 

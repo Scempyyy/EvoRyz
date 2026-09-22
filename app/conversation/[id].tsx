@@ -330,6 +330,7 @@ function JournalComponent() {
                   <Pressable
                     key={btn}
                     onPress={() => {
+                      if (loading) return;
                       feedback.tap(true);
                       setPinError(null);
                       if (btn === 'clear') {
