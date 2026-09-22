@@ -48,7 +48,8 @@ const formatSize = (size?: number) =>
     : `${(size / 1024 / 1024).toFixed(1)} MB`;
 
 export default function ConversationScreen() {
-  const { id } = useLocalSearchParams<{ id: 'workspace' | 'journal' | 'ai' }>();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const id = (Array.isArray(params.id) ? params.id[0] : params.id)?.toLowerCase();
 
   if (id === 'journal') {
     return <JournalComponent />;
@@ -75,7 +76,7 @@ function JournalComponent() {
     resetJournalPin,
     addJournalEntry,
     deleteJournalEntry,
-    user,
+    session,
   } = useApp();
 
   const [pinInput, setPinInput] = useState('');
@@ -111,15 +112,22 @@ function JournalComponent() {
     setLoading(true);
     setPinError(null);
 
-    const res = await unlockJournal(pinInput);
-    setLoading(false);
-    setPinInput('');
+    try {
+      const res = await unlockJournal(pinInput);
+      setPinInput('');
 
-    if (!res.success) {
-      setPinError(res.error || 'Incorrect PIN.');
+      if (!res.success) {
+        setPinError(res.error || 'Incorrect PIN.');
+        feedback.error(true);
+      } else {
+        feedback.success(true);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to unlock journal';
+      setPinError(msg);
       feedback.error(true);
-    } else {
-      feedback.success(true);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -148,11 +156,19 @@ function JournalComponent() {
     }
 
     setLoading(true);
-    await setupJournalPin(pinInput);
-    setLoading(false);
-    setPinInput('');
-    setConfirmPin('');
-    feedback.success(true);
+    setPinError(null);
+    try {
+      await setupJournalPin(pinInput);
+      setPinInput('');
+      setConfirmPin('');
+      feedback.success(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to save PIN';
+      setPinError(msg);
+      feedback.error(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Handle Account Reset
@@ -162,22 +178,34 @@ function JournalComponent() {
       return;
     }
     setLoading(true);
-    await resetJournalPin(newResetPin);
-    setLoading(false);
-    setResetModalVisible(false);
-    setNewResetPin('');
-    feedback.success(true);
+    try {
+      await resetJournalPin(newResetPin);
+      setResetModalVisible(false);
+      setNewResetPin('');
+      feedback.success(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Reset failed';
+      setPinError(msg);
+      feedback.error(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Handle Entry Save
   const handleSaveEntry = async () => {
     if (!entryText.trim()) return;
     setLoading(true);
-    await addJournalEntry(entryText.trim());
-    setEntryText('');
-    setLoading(false);
-    feedback.tap(true);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    try {
+      await addJournalEntry(entryText.trim());
+      setEntryText('');
+      feedback.tap(true);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch {
+      feedback.error(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const copyEntry = async (text: string) => {
@@ -302,41 +330,68 @@ function JournalComponent() {
           <View style={s.modalOverlay}>
             <View style={s.modalSheet}>
               <Text style={s.modalTitle}>Reset Journal PIN</Text>
-              <Text style={s.modalBody}>
-                Authenticated as: <Text style={{ color: 'white', fontWeight: '700' }}>{user.email || user.name}</Text>
-                {'\n\n'}
-                Zero-knowledge notice: Resetting your PIN updates your cryptographic key. Past entries encrypted with the previous PIN will be protected and archived.
-              </Text>
+              {!session?.user?.email ? (
+                <>
+                  <Text style={s.modalBody}>
+                    Account authentication required. You must be signed in with your verified Google account to reset your journal PIN.
+                  </Text>
+                  <View style={s.modalActions}>
+                    <Pressable
+                      style={s.modalCancel}
+                      onPress={() => setResetModalVisible(false)}
+                    >
+                      <Text style={s.modalCancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      style={s.modalConfirm}
+                      onPress={() => {
+                        setResetModalVisible(false);
+                        router.push('/auth');
+                      }}
+                    >
+                      <Text style={s.modalConfirmText}>Sign In</Text>
+                    </Pressable>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={s.modalBody}>
+                    Authenticated as: <Text style={{ color: 'white', fontWeight: '700' }}>{session.user.email}</Text>
+                    {'\n\n'}
+                    Zero-knowledge notice: Resetting your PIN updates your cryptographic key. Past entries encrypted with the previous PIN will be protected and archived.
+                  </Text>
 
-              <TextInput
-                value={newResetPin}
-                onChangeText={setNewResetPin}
-                placeholder="New 4-digit PIN"
-                placeholderTextColor={colors.muted}
-                keyboardType="number-pad"
-                maxLength={4}
-                secureTextEntry
-                style={s.modalInput}
-              />
+                  <TextInput
+                    value={newResetPin}
+                    onChangeText={setNewResetPin}
+                    placeholder="New 4-digit PIN"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                    secureTextEntry
+                    style={s.modalInput}
+                  />
 
-              <View style={s.modalActions}>
-                <Pressable
-                  style={s.modalCancel}
-                  onPress={() => {
-                    setResetModalVisible(false);
-                    setNewResetPin('');
-                  }}
-                >
-                  <Text style={s.modalCancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={[s.modalConfirm, newResetPin.length < 4 && { opacity: 0.5 }]}
-                  disabled={newResetPin.length < 4 || loading}
-                  onPress={handleAccountReset}
-                >
-                  <Text style={s.modalConfirmText}>Confirm Reset</Text>
-                </Pressable>
-              </View>
+                  <View style={s.modalActions}>
+                    <Pressable
+                      style={s.modalCancel}
+                      onPress={() => {
+                        setResetModalVisible(false);
+                        setNewResetPin('');
+                      }}
+                    >
+                      <Text style={s.modalCancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[s.modalConfirm, newResetPin.length < 4 && { opacity: 0.5 }]}
+                      disabled={newResetPin.length < 4 || loading}
+                      onPress={handleAccountReset}
+                    >
+                      <Text style={s.modalConfirmText}>Confirm Reset</Text>
+                    </Pressable>
+                  </View>
+                </>
+              )}
             </View>
           </View>
         </Modal>
@@ -475,36 +530,44 @@ function WorkspaceChatComponent() {
   };
 
   const attachMedia = async (kind: 'image' | 'video') => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: kind === 'image' ? ['images'] : ['videos'],
-      quality: 0.85,
-      videoMaxDuration: 120,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const a = result.assets[0];
-      sendMessage(kind === 'image' ? 'Photo' : 'Video', 'workspace', kind, {
-        uri: a.uri,
-        attachmentName: a.fileName ?? `${kind}.${kind === 'image' ? 'jpg' : 'mp4'}`,
-        mimeType: a.mimeType ?? undefined,
-        width: a.width,
-        height: a.height,
-        duration: a.duration ? a.duration / 1000 : undefined,
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: kind === 'image' ? ['images'] : ['videos'],
+        quality: 0.85,
+        videoMaxDuration: 120,
       });
+      if (!result.canceled && result.assets[0]) {
+        const a = result.assets[0];
+        sendMessage(kind === 'image' ? 'Photo' : 'Video', 'workspace', kind, {
+          uri: a.uri,
+          attachmentName: a.fileName ?? `${kind}.${kind === 'image' ? 'jpg' : 'mp4'}`,
+          mimeType: a.mimeType ?? undefined,
+          width: a.width,
+          height: a.height,
+          duration: a.duration ? a.duration / 1000 : undefined,
+        });
+      }
+    } catch (e) {
+      console.warn('[WorkspaceChat] attachMedia error:', e);
     }
   };
 
   const attachFile = async () => {
-    const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-    if (!result.canceled && result.assets[0]) {
-      const a = result.assets[0];
-      sendMessage(a.name, 'workspace', 'file', {
-        uri: a.uri,
-        attachmentName: a.name,
-        mimeType: a.mimeType ?? undefined,
-        size: a.size,
-      });
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+      if (!result.canceled && result.assets[0]) {
+        const a = result.assets[0];
+        sendMessage(a.name, 'workspace', 'file', {
+          uri: a.uri,
+          attachmentName: a.name,
+          mimeType: a.mimeType ?? undefined,
+          size: a.size,
+        });
+      }
+    } catch (e) {
+      console.warn('[WorkspaceChat] attachFile error:', e);
     }
   };
 
@@ -665,20 +728,27 @@ function AiMentorComponent() {
     setAiHistory((prev) => [...prev, { role: 'user', content: userPrompt }]);
     setLoading(true);
 
-    const historyPayload: ChatMessageContext[] = aiHistory.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    try {
+      const historyPayload: ChatMessageContext[] = aiHistory.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
 
-    const result = await EvoRyzAIService.ask(userPrompt, historyPayload);
-    setLoading(false);
-
-    setAiHistory((prev) => [
-      ...prev,
-      { role: 'model', content: result.text },
-    ]);
-
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+      const result = await EvoRyzAIService.ask(userPrompt, historyPayload);
+      setAiHistory((prev) => [
+        ...prev,
+        { role: 'model', content: result.text },
+      ]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'AI mentor request failed';
+      setAiHistory((prev) => [
+        ...prev,
+        { role: 'model', content: `Unable to get guidance right now: ${msg}. Please try again.` },
+      ]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
   };
 
   return (

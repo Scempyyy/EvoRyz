@@ -47,13 +47,16 @@ function parseUrlParams(url: string): Record<string, string> {
   return params;
 }
 
+const inFlightCodeExchanges = new Map<string, Promise<AuthResult>>();
+let lastExchangedCode: string | null = null;
+
 export const authService = {
   /**
    * Initiates Google OAuth authentication flow with Supabase Auth
    */
   async signInWithGoogle(): Promise<AuthResult> {
     try {
-      const redirectUrl = Linking.createURL('auth/callback');
+      const redirectUrl = Linking.createURL('auth/callback', { scheme: 'evoryz' });
 
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
@@ -94,11 +97,23 @@ export const authService = {
   },
 
   /**
-   * Processes a callback URL returned by OAuth redirect
+   * Processes a callback URL or parameter set returned by OAuth redirect
    */
-  async handleAuthCallbackUrl(url: string): Promise<AuthResult> {
+  async handleAuthCallbackUrl(
+    urlOrParams: string | Record<string, string | string[] | undefined>
+  ): Promise<AuthResult> {
     try {
-      const params = parseUrlParams(url);
+      let params: Record<string, string> = {};
+
+      if (typeof urlOrParams === 'string') {
+        params = parseUrlParams(urlOrParams);
+      } else if (urlOrParams && typeof urlOrParams === 'object') {
+        for (const [key, val] of Object.entries(urlOrParams)) {
+          if (val !== undefined) {
+            params[key] = Array.isArray(val) ? val[0] : val;
+          }
+        }
+      }
 
       if (params.error || params.error_description) {
         return {
@@ -109,11 +124,37 @@ export const authService = {
 
       // If PKCE authorization code was returned
       if (params.code) {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(params.code);
-        if (error) {
-          return { success: false, error: error.message };
+        const code = params.code;
+
+        // If this exact code was already exchanged successfully, return the active session
+        if (code === lastExchangedCode) {
+          const { data } = await supabase.auth.getSession();
+          if (data.session) {
+            return { success: true, user: data.session.user, session: data.session };
+          }
         }
-        return { success: true, user: data.user ?? undefined, session: data.session };
+
+        // If an exchange is already in-flight for THIS specific code, await that promise
+        const existingExchange = inFlightCodeExchanges.get(code);
+        if (existingExchange) {
+          return await existingExchange;
+        }
+
+        const exchangePromise = (async () => {
+          try {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+            if (error) {
+              return { success: false, error: error.message };
+            }
+            lastExchangedCode = code;
+            return { success: true, user: data.user ?? undefined, session: data.session };
+          } finally {
+            inFlightCodeExchanges.delete(code);
+          }
+        })();
+
+        inFlightCodeExchanges.set(code, exchangePromise);
+        return await exchangePromise;
       }
 
       // If implicit flow tokens were returned in hash
@@ -146,6 +187,8 @@ export const authService = {
    */
   async signOut(): Promise<{ error?: string }> {
     try {
+      lastExchangedCode = null;
+      inFlightCodeExchanges.clear();
       const { error } = await supabase.auth.signOut();
       if (error) return { error: error.message };
       return {};

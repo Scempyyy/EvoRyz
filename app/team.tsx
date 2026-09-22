@@ -9,12 +9,38 @@ import { feedback } from '@/src/services/feedback';
 export default function Team() {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const { configureMode } = useApp();
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { createWorkspace, joinWorkspace } = useApp();
 
-  const finish = (joining = false) => {
-    feedback.success(true);
-    configureMode('team', joining ? 'Joined Team' : name || 'My Team');
-    router.replace('/(tabs)/daily');
+  const handleCreate = async () => {
+    setLoading(true);
+    setError('');
+    const teamName = name.trim() || 'My Team';
+    const res = await createWorkspace(teamName, 'team');
+    setLoading(false);
+    if (res.success) {
+      router.replace('/(tabs)/daily');
+    } else {
+      setError(res.error || 'Failed to create team.');
+    }
+  };
+
+  const handleJoin = async () => {
+    if (!code.trim()) {
+      setError('Enter a team invite code to join.');
+      feedback.error(true);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    const res = await joinWorkspace(code.trim());
+    setLoading(false);
+    if (res.success) {
+      router.replace('/(tabs)/daily');
+    } else {
+      setError(res.error || 'Failed to join team workspace.');
+    }
   };
 
   return (
@@ -29,27 +55,35 @@ export default function Team() {
         <Text style={s.label}>CREATE A TEAM</Text>
         <TextInput
           value={name}
-          onChangeText={setName}
+          onChangeText={(val) => {
+            setName(val);
+            setError('');
+          }}
           placeholder="Team name"
           placeholderTextColor={colors.muted}
           style={s.input}
         />
-        <Pressable style={s.button} onPress={() => finish(false)}>
-          <Text style={s.buttonText}>Create team</Text>
+        <Pressable style={s.button} disabled={loading} onPress={handleCreate}>
+          <Text style={s.buttonText}>{loading ? 'Creating…' : 'Create team'}</Text>
         </Pressable>
 
         <Text style={s.or}>or join with a team code</Text>
         <TextInput
           value={code}
-          onChangeText={setCode}
+          onChangeText={(val) => {
+            setCode(val);
+            setError('');
+          }}
           autoCapitalize="characters"
           placeholder="EVR-XXXX"
           placeholderTextColor={colors.muted}
           style={s.input}
         />
-        <Pressable style={s.secondary} onPress={() => finish(true)}>
-          <Text style={s.secondaryText}>Join team</Text>
+        <Pressable style={s.secondary} disabled={loading} onPress={handleJoin}>
+          <Text style={s.secondaryText}>{loading ? 'Joining…' : 'Join team'}</Text>
         </Pressable>
+
+        {error ? <Text style={s.error}>{error}</Text> : null}
       </View>
     </SafeAreaView>
   );
@@ -89,4 +123,5 @@ const s = StyleSheet.create({
     borderColor: colors.border,
   },
   secondaryText: { color: colors.violetLight, fontWeight: '800', fontSize: 16 },
+  error: { color: colors.red, fontSize: 13, marginTop: 14, textAlign: 'center' },
 });

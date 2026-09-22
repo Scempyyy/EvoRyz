@@ -9,25 +9,36 @@ import { feedback } from '@/src/services/feedback';
 export default function Duo() {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
-  const { configureMode, workspace } = useApp();
+  const [loading, setLoading] = useState(false);
+  const { createWorkspace, joinWorkspace, workspace } = useApp();
 
-  const generatedCode = workspace?.inviteCode || 'EVR-DUO1';
-
-  const connect = () => {
+  const connect = async () => {
     if (!code.trim()) {
       setError('Enter an invite code, or create your duo below.');
       feedback.error(true);
       return;
     }
-    feedback.success(true);
-    configureMode('duo', 'Duo Workspace');
-    router.replace('/(tabs)/daily');
+    setLoading(true);
+    setError('');
+    const res = await joinWorkspace(code.trim());
+    setLoading(false);
+    if (res.success) {
+      router.replace('/(tabs)/daily');
+    } else {
+      setError(res.error || 'Failed to join duo workspace.');
+    }
   };
 
-  const create = () => {
-    feedback.success(true);
-    configureMode('duo', 'My Duo');
-    router.replace('/(tabs)/daily');
+  const create = async () => {
+    setLoading(true);
+    setError('');
+    const res = await createWorkspace('My Duo', 'duo');
+    setLoading(false);
+    if (res.success) {
+      router.replace('/(tabs)/daily');
+    } else {
+      setError(res.error || 'Failed to create duo workspace.');
+    }
   };
 
   return (
@@ -40,9 +51,13 @@ export default function Duo() {
         </Text>
 
         <View style={s.card}>
-          <Text style={s.label}>YOUR INVITE CODE</Text>
-          <Text style={s.code}>{generatedCode}</Text>
-          <Text style={s.hint}>Share it with the one person joining you</Text>
+          <Text style={s.label}>INVITE CODE</Text>
+          <Text style={s.code}>{workspace?.inviteCode || 'Tap Create Below'}</Text>
+          <Text style={s.hint}>
+            {workspace?.inviteCode
+              ? 'Share this code with your partner to join you'
+              : 'Create your duo to generate a unique invite code'}
+          </Text>
         </View>
 
         <Text style={s.or}>or join with their code</Text>
@@ -62,11 +77,11 @@ export default function Duo() {
       </View>
 
       <View style={s.buttons}>
-        <Pressable style={s.secondary} onPress={create}>
-          <Text style={s.secondaryText}>Create duo</Text>
+        <Pressable style={s.secondary} disabled={loading} onPress={create}>
+          <Text style={s.secondaryText}>{loading ? 'Creating…' : 'Create duo'}</Text>
         </Pressable>
-        <Pressable style={s.button} onPress={connect}>
-          <Text style={s.buttonText}>Join duo</Text>
+        <Pressable style={s.button} disabled={loading} onPress={connect}>
+          <Text style={s.buttonText}>{loading ? 'Joining…' : 'Join duo'}</Text>
         </Pressable>
       </View>
     </SafeAreaView>
@@ -88,8 +103,8 @@ const s = StyleSheet.create({
     marginTop: 32,
   },
   label: { color: colors.muted, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
-  code: { color: 'white', fontWeight: '900', fontSize: 30, letterSpacing: 3, marginVertical: 10 },
-  hint: { color: colors.muted, fontSize: 13 },
+  code: { color: 'white', fontWeight: '900', fontSize: 28, letterSpacing: 2, marginVertical: 10 },
+  hint: { color: colors.muted, fontSize: 13, textAlign: 'center' },
   or: { color: colors.muted, textAlign: 'center', marginVertical: 22 },
   input: {
     backgroundColor: colors.surface,

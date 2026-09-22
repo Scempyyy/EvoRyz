@@ -19,7 +19,7 @@ export default function Chat() {
       />
 
       {/* 1. Private Personal Journal */}
-      <Pressable onPress={() => router.push('/conversation/journal')}>
+      <Pressable onPress={() => router.push({ pathname: '/conversation/[id]', params: { id: 'journal' } })}>
         <Card style={s.chat}>
           <View style={[s.icon, { backgroundColor: '#291F38' }]}>
             <Ionicons name="lock-closed" size={22} color={colors.violetLight} />
@@ -40,7 +40,7 @@ export default function Chat() {
       </Pressable>
 
       {/* 2. EvoRyz AI Mentor (Always available in Solo or as an assistant) */}
-      <Pressable onPress={() => router.push('/conversation/ai' as never)}>
+      <Pressable onPress={() => router.push({ pathname: '/conversation/[id]', params: { id: 'ai' } })}>
         <Card style={s.chat}>
           <View style={[s.icon, { backgroundColor: '#1E293B' }]}>
             <Ionicons name="sparkles" size={22} color="#38BDF8" />
@@ -62,7 +62,7 @@ export default function Chat() {
 
       {/* 3. Workspace Chat (Duo / Team) */}
       {workspace ? (
-        <Pressable onPress={() => router.push('/conversation/workspace')}>
+        <Pressable onPress={() => router.push({ pathname: '/conversation/[id]', params: { id: 'workspace' } })}>
           <Card style={s.chat}>
             <View style={[s.icon, { backgroundColor: colors.blue }]}>
               <Text style={{ color: 'white', fontWeight: '900', fontSize: 18 }}>

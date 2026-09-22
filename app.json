@@ -28,7 +28,8 @@
         {
           "microphonePermission": "Allow EvoRyz to record voice notes."
         }
-      ]
+      ],
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true

@@ -27,7 +27,9 @@ export default function Profile() {
     streak,
     workspace,
     mode,
-    configureMode,
+    createWorkspace,
+    joinWorkspace,
+    leaveWorkspace,
     updateNotifications,
     updatePreferences,
     signOut,
@@ -50,6 +52,8 @@ export default function Profile() {
   // Workspace states
   const [joinCode, setJoinCode] = useState('');
   const [newTeamName, setNewTeamName] = useState('');
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const completed = tasks.filter((t) => t.completed).length;
   const consistency = habits.length
@@ -91,10 +95,16 @@ export default function Profile() {
       return;
     }
     setPinError(null);
-    await resetJournalPin(newPin);
-    setPinSuccess('PIN reset using authenticated account.');
-    setNewPin('');
-    feedback.success(true);
+    try {
+      await resetJournalPin(newPin);
+      setPinSuccess('PIN reset using authenticated account.');
+      setNewPin('');
+      feedback.success(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Reset failed';
+      setPinError(msg);
+      feedback.error(true);
+    }
   };
 
   return (
@@ -421,13 +431,19 @@ export default function Profile() {
 
                 <Pressable
                   style={[s.btnSecondary, { marginTop: 14, borderColor: colors.red }]}
-                  onPress={() => {
-                    configureMode('solo');
+                  disabled={workspaceLoading}
+                  onPress={async () => {
+                    setWorkspaceLoading(true);
+                    setWorkspaceError(null);
+                    await leaveWorkspace();
+                    setWorkspaceLoading(false);
                     setActiveModal(null);
                     feedback.tap(true);
                   }}
                 >
-                  <Text style={[s.btnSecondaryText, { color: colors.red }]}>Leave Workspace (Return to Solo)</Text>
+                  <Text style={[s.btnSecondaryText, { color: colors.red }]}>
+                    {workspaceLoading ? 'Leaving…' : 'Leave Workspace (Return to Solo)'}
+                  </Text>
                 </Pressable>
               </View>
             ) : (
@@ -439,7 +455,10 @@ export default function Profile() {
                 <Text style={s.inputLabel}>Join with Invite Code</Text>
                 <TextInput
                   value={joinCode}
-                  onChangeText={setJoinCode}
+                  onChangeText={(val) => {
+                    setJoinCode(val);
+                    setWorkspaceError(null);
+                  }}
                   placeholder="EVR-XXXX"
                   placeholderTextColor={colors.muted}
                   autoCapitalize="characters"
@@ -447,37 +466,57 @@ export default function Profile() {
                 />
                 <Pressable
                   style={s.btnPrimary}
-                  disabled={!joinCode.trim()}
-                  onPress={() => {
-                    configureMode('duo', 'Joined Workspace');
-                    setJoinCode('');
-                    setActiveModal(null);
-                    feedback.success(true);
+                  disabled={!joinCode.trim() || workspaceLoading}
+                  onPress={async () => {
+                    setWorkspaceLoading(true);
+                    setWorkspaceError(null);
+                    const res = await joinWorkspace(joinCode.trim());
+                    setWorkspaceLoading(false);
+                    if (res.success) {
+                      setJoinCode('');
+                      setActiveModal(null);
+                    } else {
+                      setWorkspaceError(res.error || 'Failed to join workspace.');
+                    }
                   }}
                 >
-                  <Text style={s.btnPrimaryText}>Join Workspace</Text>
+                  <Text style={s.btnPrimaryText}>{workspaceLoading ? 'Joining…' : 'Join Workspace'}</Text>
                 </Pressable>
 
                 <Text style={[s.inputLabel, { marginTop: 14 }]}>Or Create a Team</Text>
                 <TextInput
                   value={newTeamName}
-                  onChangeText={setNewTeamName}
+                  onChangeText={(val) => {
+                    setNewTeamName(val);
+                    setWorkspaceError(null);
+                  }}
                   placeholder="Team Name"
                   placeholderTextColor={colors.muted}
                   style={s.modalInput}
                 />
                 <Pressable
                   style={s.btnSecondary}
-                  disabled={!newTeamName.trim()}
-                  onPress={() => {
-                    configureMode('team', newTeamName.trim());
-                    setNewTeamName('');
-                    setActiveModal(null);
-                    feedback.success(true);
+                  disabled={!newTeamName.trim() || workspaceLoading}
+                  onPress={async () => {
+                    setWorkspaceLoading(true);
+                    setWorkspaceError(null);
+                    const res = await createWorkspace(newTeamName.trim(), 'team');
+                    setWorkspaceLoading(false);
+                    if (res.success) {
+                      setNewTeamName('');
+                      setActiveModal(null);
+                    } else {
+                      setWorkspaceError(res.error || 'Failed to create team.');
+                    }
                   }}
                 >
-                  <Text style={s.btnSecondaryText}>Create Team Workspace</Text>
+                  <Text style={s.btnSecondaryText}>{workspaceLoading ? 'Creating…' : 'Create Team Workspace'}</Text>
                 </Pressable>
+                {workspaceError ? (
+                  <Text style={{ color: colors.red, fontSize: 13, marginTop: 10, textAlign: 'center' }}>
+                    {workspaceError}
+                  </Text>
+                ) : null}
               </View>
             )}
 

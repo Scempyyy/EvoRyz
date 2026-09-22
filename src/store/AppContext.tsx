@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import { AppState } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 import {
   ActivityEvent,
@@ -24,10 +25,11 @@ import { feedback } from '@/src/services/feedback';
 import { sfx } from '@/src/services/sfx';
 import { authService } from '@/src/services/auth';
 import { supabaseRepo } from '@/src/services/supabaseRepository';
+import { generateUUID, ensureUUID, isUUID } from '@/src/utils/uuid';
 
 const storageKey = 'evoryz.local-state.v3';
 const stamp = () => new Date().toISOString();
-const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const newId = () => generateUUID();
 
 const notificationDefaults: NotificationSettings = {
   enabled: true,
@@ -62,7 +64,7 @@ function seed(day: string, ownerId: string) {
   return {
     tasks: [
       {
-        id: 't1',
+        id: generateUUID(),
         ownerId,
         title: 'Welcome to EvoRyz — tap to complete',
         visibility: 'private' as Visibility,
@@ -74,7 +76,7 @@ function seed(day: string, ownerId: string) {
     ] as DailyTask[],
     habits: [
       {
-        id: 'h1',
+        id: generateUUID(),
         ownerId,
         name: 'Morning focus session',
         type: 'build' as const,
@@ -88,7 +90,7 @@ function seed(day: string, ownerId: string) {
     ] as Habit[],
     goals: [
       {
-        id: 'g1',
+        id: generateUUID(),
         ownerId,
         title: 'Achieve my core goal',
         description: 'Break down your vision into weekly wins.',
@@ -97,7 +99,7 @@ function seed(day: string, ownerId: string) {
         deadline: 'In 30 days',
         priority: 'medium' as const,
         category: 'Personal',
-        milestones: [{ id: 'm1', title: 'Define scope & first milestone', complete: false }],
+        milestones: [{ id: generateUUID(), title: 'Define scope & first milestone', complete: false }],
       },
     ] as Goal[],
     meals: [] as Meal[],
@@ -137,6 +139,9 @@ type Ctx = State & {
   isJournalUnlocked: boolean;
   decryptedJournalEntries: { id: string; plaintext: string; timestamp: string; date: string }[];
   configureMode: (mode: UsageMode, name?: string) => void;
+  createWorkspace: (name: string, mode: 'duo' | 'team') => Promise<{ success: boolean; error?: string }>;
+  joinWorkspace: (inviteCode: string) => Promise<{ success: boolean; error?: string }>;
+  leaveWorkspace: () => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
   toggleTask: (id: string) => void;
   addTask: (title: string, visibility: Visibility) => void;
@@ -212,28 +217,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .then((saved) => {
         if (saved) {
           const stored = JSON.parse(saved) as Partial<State>;
-          setState((prev) => rollover({
-            ...prev,
-            ...stored,
-            meals: stored.meals ?? [],
-            journal: stored.journal ?? [],
-            user: {
-              ...prev.user,
-              ...stored.user,
-              settings: {
-                ...prev.user.settings,
-                ...stored.user?.settings,
-                preferences: {
-                  ...prev.user.settings.preferences,
-                  ...stored.user?.settings?.preferences,
-                },
-                notifications: {
-                  ...notificationDefaults,
-                  ...stored.user?.settings?.notifications,
+          setState((prev) => {
+            const raw: State = {
+              ...prev,
+              ...stored,
+              tasks: (stored.tasks ?? prev.tasks).map((t) => ({ ...t, id: ensureUUID(t.id) })),
+              habits: (stored.habits ?? prev.habits).map((h) => ({ ...h, id: ensureUUID(h.id) })),
+              goals: (stored.goals ?? prev.goals).map((g) => ({
+                ...g,
+                id: ensureUUID(g.id),
+                milestones: (g.milestones ?? []).map((m) => ({ ...m, id: ensureUUID(m.id) })),
+              })),
+              meals: (stored.meals ?? []).map((m) => ({ ...m, id: ensureUUID(m.id) })),
+              messages: (stored.messages ?? []).map((m) => ({ ...m, id: ensureUUID(m.id) })),
+              journal: (stored.journal ?? []).map((j) => ({ ...j, id: ensureUUID(j.id) })),
+              activities: (stored.activities ?? []).map((a) => ({ ...a, id: ensureUUID(a.id) })),
+              workspace: stored.workspace
+                ? {
+                    ...stored.workspace,
+                    id: ensureUUID(stored.workspace.id),
+                    members: (stored.workspace.members ?? []).map((mem) => ({
+                      ...mem,
+                      id: ensureUUID(mem.id),
+                    })),
+                  }
+                : undefined,
+              user: {
+                ...prev.user,
+                ...stored.user,
+                settings: {
+                  ...prev.user.settings,
+                  ...stored.user?.settings,
+                  preferences: {
+                    ...prev.user.settings.preferences,
+                    ...stored.user?.settings?.preferences,
+                  },
+                  notifications: {
+                    ...notificationDefaults,
+                    ...stored.user?.settings?.notifications,
+                  },
                 },
               },
-            },
-          }));
+            };
+            return rollover(raw);
+          });
         }
       })
       .catch(() => undefined)
@@ -284,16 +311,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
     };
 
-    // Update state with real user ID and migrate items
+    // Update state with real user ID and migrate items ensuring UUIDs
     setState((prev) => ({
       ...prev,
       user: { ...prev.user, ...authenticatedUser },
       hasCompletedSetup: true,
-      tasks: prev.tasks.map((t) => (t.ownerId === 'me' || t.ownerId === 'unauthenticated' ? { ...t, ownerId: uid } : t)),
-      habits: prev.habits.map((h) => (h.ownerId === 'me' || h.ownerId === 'unauthenticated' ? { ...h, ownerId: uid } : h)),
-      goals: prev.goals.map((g) => (g.ownerId === 'me' || g.ownerId === 'unauthenticated' ? { ...g, ownerId: uid } : g)),
-      meals: prev.meals.map((m) => (m.ownerId === 'me' || m.ownerId === 'unauthenticated' ? { ...m, ownerId: uid } : m)),
-      journal: prev.journal.map((j) => (j.ownerId === 'me' || j.ownerId === 'unauthenticated' ? { ...j, ownerId: uid } : j)),
+      tasks: prev.tasks.map((t) => (t.ownerId === 'me' || t.ownerId === 'unauthenticated' || !isUUID(t.ownerId) ? { ...t, ownerId: uid, id: ensureUUID(t.id) } : { ...t, id: ensureUUID(t.id) })),
+      habits: prev.habits.map((h) => (h.ownerId === 'me' || h.ownerId === 'unauthenticated' || !isUUID(h.ownerId) ? { ...h, ownerId: uid, id: ensureUUID(h.id) } : { ...h, id: ensureUUID(h.id) })),
+      goals: prev.goals.map((g) => (g.ownerId === 'me' || g.ownerId === 'unauthenticated' || !isUUID(g.ownerId) ? { ...g, ownerId: uid, id: ensureUUID(g.id) } : { ...g, id: ensureUUID(g.id) })),
+      meals: prev.meals.map((m) => (m.ownerId === 'me' || m.ownerId === 'unauthenticated' || !isUUID(m.ownerId) ? { ...m, ownerId: uid, id: ensureUUID(m.id) } : { ...m, id: ensureUUID(m.id) })),
+      journal: prev.journal.map((j) => (j.ownerId === 'me' || j.ownerId === 'unauthenticated' || !isUUID(j.ownerId) ? { ...j, ownerId: uid, id: ensureUUID(j.id) } : { ...j, id: ensureUUID(j.id) })),
     }));
 
     // Upsert profile in Supabase
@@ -362,7 +389,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 4. Subscribe to Realtime messages when workspace is active
   useEffect(() => {
-    if (!state.workspace?.id) return;
+    const wsId = state.workspace?.id;
+    if (!wsId) return;
+
+    let active = true;
+    supabaseRepo
+      .fetchMessages('workspace', wsId)
+      .then((fetched) => {
+        if (active && fetched.length > 0) {
+          setState((prev) => ({
+            ...prev,
+            messages: fetched,
+          }));
+        }
+      })
+      .catch((err) => console.warn('[AppContext] fetchMessages error:', err));
 
     const unsubscribe = supabaseRepo.subscribeToMessages('workspace', (newMsg) => {
       setState((prev) => {
@@ -375,9 +416,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      active = false;
       unsubscribe();
     };
   }, [state.workspace?.id]);
+
+  // 5. Lock journal when app transitions to inactive or background
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState.match(/inactive|background/)) {
+        journalCrypto.lock();
+        setIsJournalUnlocked(false);
+        setDecryptedEntries([]);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  // 6. Inactivity timeout watcher for unlocked journal session
+  useEffect(() => {
+    if (!isJournalUnlocked) return;
+
+    const interval = setInterval(() => {
+      if (!journalCrypto.isUnlocked()) {
+        setIsJournalUnlocked(false);
+        setDecryptedEntries([]);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [isJournalUnlocked]);
 
   const value = useMemo<Ctx>(() => {
     const update = (recipe: (previous: State) => State) =>
@@ -401,12 +472,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isJournalUnlocked,
       decryptedJournalEntries: decryptedEntries,
 
-      configureMode: (mode, name) =>
-        update((previous) => {
-          if (mode === 'solo') {
-            return {
+      configureMode: (mode, name) => {
+        if (mode === 'solo') {
+          void (async () => {
+            const currentWsId = state.workspace?.id;
+            const currentUid = state.user.id;
+            if (currentWsId && isUUID(currentUid)) {
+              await supabaseRepo.leaveWorkspace(currentUid, currentWsId);
+            }
+            update((previous) => ({
               ...previous,
-              mode,
+              mode: 'solo',
               workspace: undefined,
               hasCompletedSetup: true,
               tasks: previous.tasks.map((item) => ({
@@ -426,21 +502,136 @@ export function AppProvider({ children }: { children: ReactNode }) {
               })),
               messages: [],
               activities: [],
-            };
+            }));
+          })();
+          return;
+        }
+
+        const wsName = name?.trim() || (mode === 'duo' ? 'My Duo' : 'My Team');
+        void (async () => {
+          const currentUid = state.user.id;
+          if (isUUID(currentUid)) {
+            const dbWs = await supabaseRepo.createWorkspace(currentUid, wsName, mode);
+            if (dbWs) {
+              feedback.sound('workspaceConnected', state.user.settings.preferences.sfx);
+              update((previous) => ({
+                ...previous,
+                mode,
+                workspace: dbWs,
+                hasCompletedSetup: true,
+              }));
+              return;
+            }
           }
-          const workspaceId = newId();
+
+          const workspaceId = generateUUID();
           const members = [
-            { id: previous.user.id, name: previous.user.name, avatar: previous.user.avatar },
+            { id: state.user.id, name: state.user.name, avatar: state.user.avatar },
           ];
           const workspace: Workspace = {
             id: workspaceId,
             mode,
-            name: name?.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
+            name: wsName,
             inviteCode: `EVR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
             members,
           };
-          return { ...previous, mode, workspace, hasCompletedSetup: true };
-        }),
+          update((previous) => ({ ...previous, mode, workspace, hasCompletedSetup: true }));
+        })();
+      },
+
+      createWorkspace: async (name: string, mode: 'duo' | 'team') => {
+        const wsName = name.trim() || (mode === 'duo' ? 'My Duo' : 'My Team');
+        feedback.tap(state.user.settings.preferences.haptics);
+        const currentUid = state.user.id;
+
+        if (isUUID(currentUid)) {
+          const dbWs = await supabaseRepo.createWorkspace(currentUid, wsName, mode);
+          if (dbWs) {
+            feedback.sound('workspaceConnected', state.user.settings.preferences.sfx);
+            update((p) => ({
+              ...p,
+              mode,
+              workspace: dbWs,
+              hasCompletedSetup: true,
+            }));
+            return { success: true };
+          }
+        }
+
+        const workspace: Workspace = {
+          id: generateUUID(),
+          mode,
+          name: wsName,
+          inviteCode: `EVR-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+          members: [{ id: currentUid, name: state.user.name, avatar: state.user.avatar }],
+        };
+        update((p) => ({ ...p, mode, workspace, hasCompletedSetup: true }));
+        return { success: true };
+      },
+
+      joinWorkspace: async (inviteCode: string) => {
+        const cleanCode = inviteCode.trim().toUpperCase();
+        if (!cleanCode) {
+          return { success: false, error: 'Please enter a valid invite code.' };
+        }
+
+        feedback.tap(state.user.settings.preferences.haptics);
+        const res = await supabaseRepo.joinWorkspaceByInviteCode(cleanCode);
+
+        if (res.success && res.workspace) {
+          feedback.success(state.user.settings.preferences.haptics);
+          feedback.sound('workspaceConnected', state.user.settings.preferences.sfx);
+          update((p) => ({
+            ...p,
+            mode: res.workspace!.mode,
+            workspace: res.workspace,
+            hasCompletedSetup: true,
+          }));
+          void supabaseRepo.fetchMessages('workspace', res.workspace.id).then((msgs) => {
+            if (msgs.length) {
+              update((p) => ({ ...p, messages: msgs }));
+            }
+          });
+          return { success: true };
+        }
+
+        feedback.error(state.user.settings.preferences.haptics);
+        feedback.sound('error', state.user.settings.preferences.sfx);
+        return { success: false, error: res.error || 'Could not join workspace.' };
+      },
+
+      leaveWorkspace: async () => {
+        feedback.tap(state.user.settings.preferences.haptics);
+        const currentWsId = state.workspace?.id;
+        const currentUid = state.user.id;
+        if (currentWsId && isUUID(currentUid)) {
+          await supabaseRepo.leaveWorkspace(currentUid, currentWsId);
+        }
+
+        update((previous) => ({
+          ...previous,
+          mode: 'solo',
+          workspace: undefined,
+          tasks: previous.tasks.map((item) => ({
+            ...item,
+            visibility: 'private',
+            workspaceId: undefined,
+          })),
+          habits: previous.habits.map((item) => ({
+            ...item,
+            visibility: 'private',
+            workspaceId: undefined,
+          })),
+          goals: previous.goals.map((item) => ({
+            ...item,
+            visibility: 'private',
+            workspaceId: undefined,
+          })),
+          messages: [],
+          activities: [],
+        }));
+        return { success: true };
+      },
 
       signOut: async () => {
         await authService.signOut();
@@ -799,10 +990,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
 
       resetJournalPin: async (newPin: string) => {
+        // Enforce active authenticated account session
+        const currentSession = await authService.getSession();
+        if (!currentSession?.user || currentSession.user.id === 'unauthenticated' || !currentSession.user.email) {
+          throw new Error('Account authentication required. You must be signed in with your Google account to reset your journal PIN.');
+        }
+
         const securityConfig = await journalCrypto.resetPinThroughAuth(newPin);
         setIsJournalUnlocked(true);
         update((p) => ({ ...p, journalSecurity: securityConfig }));
-        void supabaseRepo.saveJournalSecurity(state.user.id, securityConfig);
+        await supabaseRepo.saveJournalSecurity(currentSession.user.id, securityConfig);
       },
 
       addJournalEntry: async (content: string) => {

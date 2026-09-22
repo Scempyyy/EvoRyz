@@ -7,11 +7,13 @@ import {
   Message,
   JournalEntry,
   Workspace,
+  WorkspaceMember,
   ActivityEvent,
   DailySummary,
   User,
 } from '@/src/types';
 import { JournalSecurityConfig } from '@/src/services/encryption';
+import { ensureUUID, isUUID, generateUUID } from '@/src/utils/uuid';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 export class SupabaseRepository {
@@ -21,6 +23,7 @@ export class SupabaseRepository {
   // PROFILES
   // --------------------------------------------------------------------------
   async getProfile(userId: string): Promise<Partial<User> | null> {
+    if (!isUUID(userId)) return null;
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -48,6 +51,7 @@ export class SupabaseRepository {
   }
 
   async upsertProfile(user: Partial<User> & { id: string }): Promise<void> {
+    if (!isUUID(user.id)) return;
     try {
       await supabase.from('profiles').upsert({
         id: user.id,
@@ -66,6 +70,7 @@ export class SupabaseRepository {
   // TASKS
   // --------------------------------------------------------------------------
   async fetchTasks(userId: string, activeDay: string): Promise<DailyTask[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('tasks')
@@ -93,11 +98,14 @@ export class SupabaseRepository {
   }
 
   async upsertTask(task: DailyTask): Promise<void> {
+    if (!isUUID(task.ownerId)) return;
+    const taskId = ensureUUID(task.id);
+    const workspaceId = task.workspaceId && isUUID(task.workspaceId) ? task.workspaceId : null;
     try {
       await supabase.from('tasks').upsert({
-        id: task.id,
+        id: taskId,
         user_id: task.ownerId,
-        workspace_id: task.workspaceId || null,
+        workspace_id: workspaceId,
         title: task.title,
         description: task.description || null,
         visibility: task.visibility,
@@ -113,6 +121,7 @@ export class SupabaseRepository {
   }
 
   async deleteTask(taskId: string): Promise<void> {
+    if (!isUUID(taskId)) return;
     try {
       await supabase.from('tasks').delete().eq('id', taskId);
     } catch (err) {
@@ -124,6 +133,7 @@ export class SupabaseRepository {
   // HABITS
   // --------------------------------------------------------------------------
   async fetchHabits(userId: string): Promise<Habit[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('habits')
@@ -152,11 +162,14 @@ export class SupabaseRepository {
   }
 
   async upsertHabit(habit: Habit): Promise<void> {
+    if (!isUUID(habit.ownerId)) return;
+    const habitId = ensureUUID(habit.id);
+    const workspaceId = habit.workspaceId && isUUID(habit.workspaceId) ? habit.workspaceId : null;
     try {
       await supabase.from('habits').upsert({
-        id: habit.id,
+        id: habitId,
         user_id: habit.ownerId,
-        workspace_id: habit.workspaceId || null,
+        workspace_id: workspaceId,
         name: habit.name,
         description: habit.description || null,
         type: habit.type,
@@ -174,6 +187,7 @@ export class SupabaseRepository {
   }
 
   async deleteHabit(habitId: string): Promise<void> {
+    if (!isUUID(habitId)) return;
     try {
       await supabase.from('habits').delete().eq('id', habitId);
     } catch (err) {
@@ -185,6 +199,7 @@ export class SupabaseRepository {
   // GOALS
   // --------------------------------------------------------------------------
   async fetchGoals(userId: string): Promise<Goal[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('goals')
@@ -212,11 +227,18 @@ export class SupabaseRepository {
   }
 
   async upsertGoal(goal: Goal): Promise<void> {
+    if (!isUUID(goal.ownerId)) return;
+    const goalId = ensureUUID(goal.id);
+    const workspaceId = goal.workspaceId && isUUID(goal.workspaceId) ? goal.workspaceId : null;
+    const milestones = (goal.milestones || []).map((m) => ({
+      ...m,
+      id: ensureUUID(m.id),
+    }));
     try {
       await supabase.from('goals').upsert({
-        id: goal.id,
+        id: goalId,
         user_id: goal.ownerId,
-        workspace_id: goal.workspaceId || null,
+        workspace_id: workspaceId,
         title: goal.title,
         description: goal.description,
         visibility: goal.visibility,
@@ -224,7 +246,7 @@ export class SupabaseRepository {
         deadline: goal.deadline,
         priority: goal.priority,
         category: goal.category,
-        milestones: goal.milestones,
+        milestones,
         updated_at: new Date().toISOString(),
       });
     } catch (err) {
@@ -233,6 +255,7 @@ export class SupabaseRepository {
   }
 
   async deleteGoal(goalId: string): Promise<void> {
+    if (!isUUID(goalId)) return;
     try {
       await supabase.from('goals').delete().eq('id', goalId);
     } catch (err) {
@@ -244,6 +267,7 @@ export class SupabaseRepository {
   // MEALS
   // --------------------------------------------------------------------------
   async fetchMeals(userId: string, activeDay: string): Promise<Meal[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('meals')
@@ -275,11 +299,14 @@ export class SupabaseRepository {
   }
 
   async insertMeal(meal: Meal): Promise<void> {
+    if (!isUUID(meal.ownerId)) return;
+    const mealId = ensureUUID(meal.id);
+    const workspaceId = meal.workspaceId && isUUID(meal.workspaceId) ? meal.workspaceId : null;
     try {
       await supabase.from('meals').insert({
-        id: meal.id,
+        id: mealId,
         user_id: meal.ownerId,
-        workspace_id: meal.workspaceId || null,
+        workspace_id: workspaceId,
         name: meal.name,
         type: meal.type,
         calories: meal.calories,
@@ -298,6 +325,7 @@ export class SupabaseRepository {
   }
 
   async deleteMeal(mealId: string): Promise<void> {
+    if (!isUUID(mealId)) return;
     try {
       await supabase.from('meals').delete().eq('id', mealId);
     } catch (err) {
@@ -317,7 +345,7 @@ export class SupabaseRepository {
         .order('created_at', { ascending: true })
         .limit(100);
 
-      if (workspaceId) {
+      if (workspaceId && isUUID(workspaceId)) {
         query = query.eq('workspace_id', workspaceId);
       }
 
@@ -350,16 +378,19 @@ export class SupabaseRepository {
   }
 
   async insertMessage(message: Message): Promise<void> {
+    if (!isUUID(message.senderId)) return;
+    const msgId = ensureUUID(message.id);
+    const workspaceId = message.workspaceId && isUUID(message.workspaceId) ? message.workspaceId : null;
     try {
       await supabase.from('messages').insert({
-        id: message.id,
-        workspace_id: message.workspaceId || null,
+        id: msgId,
+        workspace_id: workspaceId,
         sender_id: message.senderId,
         conversation_id: message.conversationId,
         type: message.type,
         content: message.content,
         status: message.status || 'sent',
-        reply_to: message.replyTo || null,
+        reply_to: message.replyTo && isUUID(message.replyTo) ? message.replyTo : null,
         reactions: message.reactions || [],
         uri: message.uri || null,
         thumbnail_uri: message.thumbnailUri || null,
@@ -430,6 +461,7 @@ export class SupabaseRepository {
   // JOURNAL ENTRIES (CIPHERTEXT ONLY)
   // --------------------------------------------------------------------------
   async fetchJournalEntries(userId: string): Promise<JournalEntry[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('journal_entries')
@@ -455,9 +487,11 @@ export class SupabaseRepository {
   }
 
   async insertJournalEntry(entry: JournalEntry): Promise<void> {
+    if (!isUUID(entry.ownerId)) return;
+    const entryId = ensureUUID(entry.id);
     try {
       await supabase.from('journal_entries').insert({
-        id: entry.id,
+        id: entryId,
         user_id: entry.ownerId,
         encrypted_content: entry.encryptedContent,
         iv: entry.iv,
@@ -471,6 +505,7 @@ export class SupabaseRepository {
   }
 
   async updateJournalEntry(id: string, encryptedContent: string, iv: string): Promise<void> {
+    if (!isUUID(id)) return;
     try {
       await supabase.from('journal_entries').update({
         encrypted_content: encryptedContent,
@@ -483,6 +518,7 @@ export class SupabaseRepository {
   }
 
   async deleteJournalEntry(entryId: string): Promise<void> {
+    if (!isUUID(entryId)) return;
     try {
       await supabase.from('journal_entries').delete().eq('id', entryId);
     } catch (err) {
@@ -494,6 +530,7 @@ export class SupabaseRepository {
   // JOURNAL SECURITY (PIN VERIFIER + SALT)
   // --------------------------------------------------------------------------
   async fetchJournalSecurity(userId: string): Promise<JournalSecurityConfig | null> {
+    if (!isUUID(userId)) return null;
     try {
       const { data, error } = await supabase
         .from('journal_security')
@@ -517,6 +554,7 @@ export class SupabaseRepository {
   }
 
   async saveJournalSecurity(userId: string, config: JournalSecurityConfig): Promise<void> {
+    if (!isUUID(userId)) return;
     try {
       await supabase.from('journal_security').upsert({
         user_id: userId,
@@ -534,11 +572,34 @@ export class SupabaseRepository {
   }
 
   // --------------------------------------------------------------------------
-  // WORKSPACES
+  // WORKSPACES LIFECYCLE & MEMBERSHIP
   // --------------------------------------------------------------------------
-  async fetchUserWorkspace(userId: string): Promise<Workspace | null> {
+  async loadWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    if (!isUUID(workspaceId)) return [];
     try {
-      // Find workspace memberships
+      const { data: allMembers, error } = await supabase
+        .from('workspace_members')
+        .select('user_id, role, profiles(name, avatar_url)')
+        .eq('workspace_id', workspaceId);
+
+      if (error || !allMembers) return [];
+
+      return allMembers.map((m: unknown) => {
+        const row = m as { user_id: string; role: string; profiles?: { name?: string; avatar_url?: string } };
+        return {
+          id: row.user_id,
+          name: row.profiles?.name || 'Member',
+          avatar: row.profiles?.avatar_url || row.profiles?.name?.charAt(0)?.toUpperCase() || 'M',
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchUserWorkspace(userId: string): Promise<Workspace | null> {
+    if (!isUUID(userId)) return null;
+    try {
       const { data: memberRows, error: memberErr } = await supabase
         .from('workspace_members')
         .select('workspace_id, role, workspaces(*)')
@@ -550,20 +611,7 @@ export class SupabaseRepository {
       const wsData = (memberRows[0] as unknown as { workspaces: { id: string; name: string; mode: 'duo' | 'team'; invite_code: string } }).workspaces;
       if (!wsData) return null;
 
-      // Fetch all members of this workspace
-      const { data: allMembers } = await supabase
-        .from('workspace_members')
-        .select('user_id, role, profiles(name, avatar_url)')
-        .eq('workspace_id', wsData.id);
-
-      const members = (allMembers || []).map((m: unknown) => {
-        const row = m as { user_id: string; role: string; profiles?: { name?: string; avatar_url?: string } };
-        return {
-          id: row.user_id,
-          name: row.profiles?.name || 'Member',
-          avatar: row.profiles?.avatar_url || row.profiles?.name?.charAt(0)?.toUpperCase() || 'M',
-        };
-      });
+      const members = await this.loadWorkspaceMembers(wsData.id);
 
       return {
         id: wsData.id,
@@ -577,10 +625,146 @@ export class SupabaseRepository {
     }
   }
 
+  async loadCurrentWorkspace(userId: string): Promise<Workspace | null> {
+    return this.fetchUserWorkspace(userId);
+  }
+
+  async createWorkspace(
+    userId: string,
+    name: string,
+    mode: 'duo' | 'team',
+    inviteCode?: string
+  ): Promise<Workspace | null> {
+    if (!isUUID(userId)) return null;
+    try {
+      // 1. Try secure RPC
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('create_workspace_secure', {
+        name_input: name.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
+        mode_input: mode,
+        invite_code_input: inviteCode || null,
+      });
+
+      if (!rpcErr && rpcData) {
+        const parsed = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
+        const members = await this.loadWorkspaceMembers(parsed.id);
+        return {
+          id: parsed.id,
+          name: parsed.name,
+          mode: parsed.mode,
+          inviteCode: parsed.invite_code,
+          members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O' }],
+        };
+      }
+
+      // 2. Direct fallback
+      const generatedCode = inviteCode?.trim().toUpperCase() || `EVR-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      const wsId = generateUUID();
+      const { data: wsRow, error: wsErr } = await supabase
+        .from('workspaces')
+        .insert({
+          id: wsId,
+          name: name.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
+          mode,
+          invite_code: generatedCode,
+          owner_id: userId,
+        })
+        .select()
+        .single();
+
+      if (wsErr || !wsRow) {
+        console.warn('[SupabaseRepository] createWorkspace fallback error:', wsErr?.message);
+        return null;
+      }
+
+      await supabase.from('workspace_members').upsert({
+        workspace_id: wsRow.id,
+        user_id: userId,
+        role: 'owner',
+      });
+
+      const members = await this.loadWorkspaceMembers(wsRow.id);
+      return {
+        id: wsRow.id,
+        name: wsRow.name,
+        mode: wsRow.mode,
+        inviteCode: wsRow.invite_code,
+        members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O' }],
+      };
+    } catch (err) {
+      console.warn('[SupabaseRepository] createWorkspace exception:', err);
+      return null;
+    }
+  }
+
+  async joinWorkspaceByInviteCode(
+    inviteCode: string
+  ): Promise<{ success: boolean; workspace?: Workspace; error?: string }> {
+    const cleanCode = inviteCode.trim().toUpperCase();
+    if (!cleanCode) {
+      return { success: false, error: 'Please enter a valid invite code.' };
+    }
+
+    try {
+      // 1. Execute secure RPC (checks invite code, server-side Duo 2-member limit, prevents duplicate membership)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('join_workspace_by_invite', {
+        invite_code_input: cleanCode,
+      });
+
+      if (rpcErr) {
+        return { success: false, error: rpcErr.message };
+      }
+
+      if (rpcData) {
+        const parsed = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
+        const members = await this.loadWorkspaceMembers(parsed.id);
+        return {
+          success: true,
+          workspace: {
+            id: parsed.id,
+            name: parsed.name,
+            mode: parsed.mode,
+            inviteCode: parsed.invite_code,
+            members,
+          },
+        };
+      }
+
+      return { success: false, error: 'Failed to join workspace.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to join workspace.';
+      return { success: false, error: msg };
+    }
+  }
+
+  async leaveWorkspace(userId: string, workspaceId: string): Promise<boolean> {
+    if (!isUUID(workspaceId) || !isUUID(userId)) return true;
+    try {
+      // 1. Try secure RPC
+      const { error: rpcErr } = await supabase.rpc('leave_workspace', {
+        workspace_id_input: workspaceId,
+      });
+
+      if (!rpcErr) return true;
+
+      // 2. Direct fallback
+      const { error: delErr } = await supabase
+        .from('workspace_members')
+        .delete()
+        .eq('workspace_id', workspaceId)
+        .eq('user_id', userId);
+
+      return !delErr;
+    } catch (err) {
+      console.warn('[SupabaseRepository] leaveWorkspace error:', err);
+      return false;
+    }
+  }
+
   // --------------------------------------------------------------------------
   // DAILY SUMMARIES & ACTIVITIES
   // --------------------------------------------------------------------------
   async fetchSummaries(userId: string): Promise<DailySummary[]> {
+    if (!isUUID(userId)) return [];
     try {
       const { data, error } = await supabase
         .from('daily_summaries')
@@ -602,10 +786,12 @@ export class SupabaseRepository {
   }
 
   async upsertSummary(userId: string, summary: DailySummary, workspaceId?: string): Promise<void> {
+    if (!isUUID(userId)) return;
+    const wsId = workspaceId && isUUID(workspaceId) ? workspaceId : null;
     try {
       await supabase.from('daily_summaries').upsert({
         user_id: userId,
-        workspace_id: workspaceId || null,
+        workspace_id: wsId,
         date: summary.date,
         you_percent: summary.you,
         shared_percent: summary.shared ?? null,
@@ -616,6 +802,7 @@ export class SupabaseRepository {
   }
 
   async fetchActivities(workspaceId: string): Promise<ActivityEvent[]> {
+    if (!isUUID(workspaceId)) return [];
     try {
       const { data, error } = await supabase
         .from('activities')
@@ -641,10 +828,11 @@ export class SupabaseRepository {
   }
 
   async insertActivity(activity: ActivityEvent): Promise<void> {
-    if (!activity.workspaceId) return;
+    if (!activity.workspaceId || !isUUID(activity.workspaceId) || !isUUID(activity.userId)) return;
+    const actId = ensureUUID(activity.id);
     try {
       await supabase.from('activities').insert({
-        id: activity.id,
+        id: actId,
         user_id: activity.userId,
         workspace_id: activity.workspaceId,
         type: activity.type,
