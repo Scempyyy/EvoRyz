@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, router } from 'expo-router';
 import {
   Animated,
-  AppState,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -36,6 +35,7 @@ import { feedback } from '@/src/services/feedback';
 import { colors } from '@/src/theme';
 import type { Message } from '@/src/types';
 import { EvoRyzAIService, ChatMessageContext } from '@/src/services/evoryzAI';
+import { evoryzDay, displayEvoDay } from '@/src/services/evoryzDay';
 
 const emojis = ['✨', '🔥', '👏', '💪', '🎉', '❤️'];
 const formatTime = (seconds = 0) =>
@@ -65,6 +65,26 @@ export default function ConversationScreen() {
 // ==============================================================================
 // 1. SECURE ENCRYPTED JOURNAL COMPONENT
 // ==============================================================================
+function formatEntryTime(isoString?: string): string {
+  if (!isoString) return '';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function safeDisplayDay(dayStr: string, todayStr: string): string {
+  if (dayStr === todayStr) return 'Today';
+  try {
+    return displayEvoDay(dayStr);
+  } catch {
+    return dayStr;
+  }
+}
+
 function JournalComponent() {
   const {
     journalSecurity,
@@ -79,6 +99,14 @@ function JournalComponent() {
     session,
   } = useApp();
 
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
   const [pinInput, setPinInput] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [setupStep, setSetupStep] = useState<'create' | 'confirm'>('create');
@@ -86,22 +114,32 @@ function JournalComponent() {
   const [pinError, setPinError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [resetModalVisible, setResetModalVisible] = useState(false);
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
   const [newResetPin, setNewResetPin] = useState('');
   const scrollRef = useRef<ScrollView>(null);
 
-  // Lock journal whenever app transitions to background or unmounts
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState.match(/inactive|background/)) {
-        lockJournal();
-      }
-    });
+  const todayDay = evoryzDay();
+  const [selectedDay, setSelectedDay] = useState<string>(todayDay);
 
-    return () => {
-      lockJournal();
-      subscription.remove();
-    };
-  }, [lockJournal]);
+  // Group entries by EvoRyz day and extract unique days (chronological descending)
+  const recordedDays = Array.from(
+    new Set(
+      decryptedJournalEntries
+        .map((e) => e.date)
+        .filter((d): d is string => typeof d === 'string' && d.length > 0)
+    )
+  ).sort((a, b) => b.localeCompare(a));
+
+  // Available days: always include today, plus any past days that actually have entries
+  // (Empty days are NEVER fabricated)
+  const availableDays = Array.from(new Set([todayDay, ...recordedDays])).sort((a, b) =>
+    b.localeCompare(a)
+  );
+
+  // Filter entries for the currently selected day
+  const displayedEntries = decryptedJournalEntries.filter(
+    (entry) => (entry.date || todayDay) === selectedDay
+  );
 
   // Handle PIN unlock
   const handleUnlock = async () => {
@@ -114,6 +152,7 @@ function JournalComponent() {
 
     try {
       const res = await unlockJournal(pinInput);
+      if (!isMounted.current) return;
       setPinInput('');
 
       if (!res.success) {
@@ -123,11 +162,14 @@ function JournalComponent() {
         feedback.success(true);
       }
     } catch (err: unknown) {
+      if (!isMounted.current) return;
       const msg = err instanceof Error ? err.message : 'Failed to unlock journal';
       setPinError(msg);
       feedback.error(true);
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -159,15 +201,19 @@ function JournalComponent() {
     setPinError(null);
     try {
       await setupJournalPin(pinInput);
+      if (!isMounted.current) return;
       setPinInput('');
       setConfirmPin('');
       feedback.success(true);
     } catch (err: unknown) {
+      if (!isMounted.current) return;
       const msg = err instanceof Error ? err.message : 'Failed to save PIN';
       setPinError(msg);
       feedback.error(true);
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -180,31 +226,42 @@ function JournalComponent() {
     setLoading(true);
     try {
       await resetJournalPin(newResetPin);
+      if (!isMounted.current) return;
       setResetModalVisible(false);
       setNewResetPin('');
       feedback.success(true);
     } catch (err: unknown) {
+      if (!isMounted.current) return;
       const msg = err instanceof Error ? err.message : 'Reset failed';
       setPinError(msg);
       feedback.error(true);
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   };
 
   // Handle Entry Save
   const handleSaveEntry = async () => {
-    if (!entryText.trim()) return;
+    const textToSave = entryText.trim();
+    if (!textToSave) return;
     setLoading(true);
     try {
-      await addJournalEntry(entryText.trim());
+      await addJournalEntry(textToSave);
+      if (!isMounted.current) return;
       setEntryText('');
+      setSelectedDay(todayDay);
       feedback.tap(true);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     } catch {
-      feedback.error(true);
+      if (isMounted.current) {
+        feedback.error(true);
+      }
     } finally {
-      setLoading(false);
+      if (isMounted.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -306,7 +363,13 @@ function JournalComponent() {
             style={[s.unlockBtn, (pinInput.length < 4 || loading) && s.unlockBtnDisabled]}
           >
             <Text style={s.unlockBtnText}>
-              {loading ? 'Decrypting…' : isFirstTime ? (setupStep === 'create' ? 'Next' : 'Save PIN') : 'Unlock Journal'}
+              {loading
+                ? 'Processing…'
+                : isFirstTime
+                ? setupStep === 'create'
+                  ? 'Next'
+                  : 'Save PIN'
+                : 'Unlock Journal'}
             </Text>
           </Pressable>
 
@@ -406,53 +469,231 @@ function JournalComponent() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 12}
       style={s.root}
     >
+      {/* Header with History and Lock actions */}
       <View style={s.header}>
         <Pressable hitSlop={10} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={27} color="white" />
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>🔒 My Journal</Text>
-          <Text style={s.sub}>Zero-knowledge AES-256 · Locked on background</Text>
+          <Text style={s.sub}>
+            {selectedDay === todayDay ? 'Today' : safeDisplayDay(selectedDay, todayDay)} · EvoRyz 2 AM Day
+          </Text>
         </View>
-        <Pressable
-          onPress={() => {
-            feedback.tap(true);
-            lockJournal();
-          }}
-          style={s.quickLock}
-          accessibilityLabel="Lock Journal"
-        >
-          <Ionicons name="lock-closed" size={18} color={colors.violetLight} />
-          <Text style={s.quickLockText}>Lock</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Pressable
+            onPress={() => {
+              feedback.tap(true);
+              setHistoryModalVisible(true);
+            }}
+            style={s.historyBtn}
+            accessibilityLabel="Journal History"
+          >
+            <Ionicons name="calendar-outline" size={16} color={colors.violetLight} />
+            <Text style={s.historyBtnText}>History</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              feedback.tap(true);
+              lockJournal();
+            }}
+            style={s.quickLock}
+            accessibilityLabel="Lock Journal"
+          >
+            <Ionicons name="lock-closed" size={16} color={colors.violetLight} />
+            <Text style={s.quickLockText}>Lock</Text>
+          </Pressable>
+        </View>
       </View>
 
+      {/* Day Selector Pill Bar */}
+      <View style={s.dayBarWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={s.dayBar}
+        >
+          {availableDays.map((day) => {
+            const isToday = day === todayDay;
+            const isSelected = day === selectedDay;
+            const count = decryptedJournalEntries.filter(
+              (e) => (e.date || todayDay) === day
+            ).length;
+
+            return (
+              <Pressable
+                key={day}
+                onPress={() => {
+                  feedback.tap(true);
+                  setSelectedDay(day);
+                }}
+                style={[s.dayPill, isSelected && s.dayPillActive]}
+              >
+                <Text
+                  style={[s.dayPillText, isSelected && s.dayPillTextActive]}
+                >
+                  {isToday ? 'Today' : displayEvoDay(day)}
+                </Text>
+                {count > 0 && (
+                  <View
+                    style={[
+                      s.dayPillBadge,
+                      isSelected && s.dayPillBadgeActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        s.dayPillBadgeText,
+                        isSelected && s.dayPillBadgeTextActive,
+                      ]}
+                    >
+                      {count}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* Viewing Past Day Banner */}
+      {selectedDay !== todayDay && (
+        <View style={s.dayBanner}>
+          <Text style={s.dayBannerText}>
+            Viewing reflections for {safeDisplayDay(selectedDay, todayDay)}
+          </Text>
+          <Pressable
+            onPress={() => {
+              feedback.tap(true);
+              setSelectedDay(todayDay);
+            }}
+            style={s.dayBannerBtn}
+          >
+            <Text style={s.dayBannerBtnText}>Return to Today</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Journal History Modal */}
+      <Modal
+        visible={historyModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setHistoryModalVisible(false)}
+      >
+        <View style={s.historyModalOverlay}>
+          <View style={s.historyModalSheet}>
+            <View style={s.historyModalHeader}>
+              <View>
+                <Text style={s.historyModalTitle}>Journal History</Text>
+                <Text style={s.historyModalSubtitle}>
+                  Organized by EvoRyz Day (02:00 → 01:59 boundary)
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => setHistoryModalVisible(false)}
+                hitSlop={8}
+                style={s.historyModalClose}
+              >
+                <Ionicons name="close" size={22} color="white" />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={{ maxHeight: 380 }}
+              contentContainerStyle={{ gap: 8, paddingVertical: 10 }}
+            >
+              {availableDays.length === 0 ? (
+                <Text style={s.historyEmptyText}>No journal entries recorded yet.</Text>
+              ) : (
+                availableDays.map((day) => {
+                  const isToday = day === todayDay;
+                  const isSelected = day === selectedDay;
+                  const count = decryptedJournalEntries.filter(
+                    (e) => (e.date || todayDay) === day
+                  ).length;
+
+                  return (
+                    <Pressable
+                      key={day}
+                      onPress={() => {
+                        feedback.tap(true);
+                        setSelectedDay(day);
+                        setHistoryModalVisible(false);
+                      }}
+                      style={[
+                        s.historyDayItem,
+                        isSelected && s.historyDayItemActive,
+                      ]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text
+                            style={[
+                              s.historyDayTitle,
+                              isSelected && { color: colors.violetLight },
+                            ]}
+                          >
+                            {isToday ? 'Today' : displayEvoDay(day)}
+                          </Text>
+                          {isToday && (
+                            <View style={s.todayTag}>
+                              <Text style={s.todayTagText}>Today</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={s.historyDayDate}>{day}</Text>
+                      </View>
+                      <View style={s.historyDayCount}>
+                        <Text style={s.historyDayCountText}>
+                          {count} {count === 1 ? 'entry' : 'entries'}
+                        </Text>
+                        <Ionicons
+                          name={isSelected ? 'checkmark-circle' : 'chevron-forward'}
+                          size={18}
+                          color={isSelected ? colors.violetLight : colors.muted}
+                        />
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Entries List */}
       <ScrollView
         ref={scrollRef}
         style={s.list}
         contentContainerStyle={s.journalContent}
         keyboardShouldPersistTaps="handled"
       >
-        {decryptedJournalEntries.length === 0 ? (
+        {displayedEntries.length === 0 ? (
           <View style={s.emptyJournal}>
             <Ionicons name="book-outline" size={48} color={colors.muted} />
-            <Text style={s.emptyJournalTitle}>Your reflections are safe.</Text>
+            <Text style={s.emptyJournalTitle}>
+              {selectedDay === todayDay ? 'Your reflections are safe.' : 'No entries on this day.'}
+            </Text>
             <Text style={s.emptyJournalSub}>
-              Zero fake demo entries. Write your thoughts below — each entry is encrypted with your PIN-derived key before saving.
+              {selectedDay === todayDay
+                ? 'Zero fake demo entries. Write your thoughts below — each entry is encrypted with your PIN-derived key before saving.'
+                : `No reflections were recorded on ${safeDisplayDay(selectedDay, todayDay)}.`}
             </Text>
           </View>
         ) : (
-          decryptedJournalEntries.map((entry) => (
+          displayedEntries.map((entry) => (
             <View key={entry.id} style={s.entryCard}>
               <View style={s.entryHeader}>
                 <View style={s.dayBadge}>
-                  <Text style={s.dayBadgeText}>EvoRyz Day {entry.date}</Text>
+                  <Text style={s.dayBadgeText}>
+                    {entry.date === todayDay ? 'Today' : safeDisplayDay(entry.date, todayDay)}
+                  </Text>
                 </View>
                 <Text style={s.entryTime}>
-                  {new Date(entry.timestamp).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
+                  {formatEntryTime(entry.timestamp)}
                 </Text>
               </View>
 
@@ -490,7 +731,11 @@ function JournalComponent() {
         <TextInput
           value={entryText}
           onChangeText={setEntryText}
-          placeholder="Reflect privately… (EvoRyz 2 AM day)"
+          placeholder={
+            selectedDay === todayDay
+              ? 'Reflect privately… (EvoRyz 2 AM day)'
+              : `Add reflection to Today (${displayEvoDay(todayDay)})…`
+          }
           placeholderTextColor={colors.muted}
           style={s.input}
           multiline
@@ -1068,6 +1313,182 @@ const s = StyleSheet.create({
     borderRadius: 8,
   },
   quickLockText: { color: colors.violetLight, fontWeight: '700', fontSize: 12 },
+  historyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#262038',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  historyBtnText: { color: colors.violetLight, fontWeight: '700', fontSize: 12 },
+  dayBarWrapper: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.bg,
+  },
+  dayBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dayPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  dayPillActive: {
+    backgroundColor: colors.violet,
+    borderColor: colors.violet,
+  },
+  dayPillText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  dayPillTextActive: {
+    color: 'white',
+    fontWeight: '700',
+  },
+  dayPillBadge: {
+    backgroundColor: colors.surface2,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  dayPillBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  dayPillBadgeText: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  dayPillBadgeTextActive: {
+    color: 'white',
+  },
+  dayBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#231B34',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  dayBannerText: {
+    color: colors.violetLight,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  dayBannerBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: colors.violet,
+  },
+  dayBannerBtnText: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  historyModalOverlay: {
+    flex: 1,
+    backgroundColor: '#000000bb',
+    justifyContent: 'flex-end',
+  },
+  historyModalSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    maxHeight: '80%',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  historyModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  historyModalTitle: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  historyModalSubtitle: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  historyModalClose: {
+    padding: 4,
+  },
+  historyEmptyText: {
+    color: colors.muted,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: 30,
+  },
+  historyDayItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: colors.surface2,
+  },
+  historyDayItemActive: {
+    borderWidth: 1,
+    borderColor: colors.violet,
+    backgroundColor: '#241D3B',
+  },
+  historyDayTitle: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  historyDayDate: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  todayTag: {
+    backgroundColor: colors.violet,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  todayTagText: {
+    color: 'white',
+    fontSize: 9,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  historyDayCount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  historyDayCountText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   list: { flex: 1 },
   messages: { padding: 16, gap: 9, flexGrow: 1 },
   journalContent: { padding: 16, gap: 12, flexGrow: 1 },

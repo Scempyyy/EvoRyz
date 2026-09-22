@@ -1,3 +1,14 @@
+/* eslint-disable import/first */
+// Polyfill global environment for Hermes / React Native before importing node-forge
+if (typeof globalThis !== 'undefined') {
+  if (typeof (globalThis as any).window === 'undefined') {
+    (globalThis as any).window = globalThis;
+  }
+  if (typeof (globalThis as any).self === 'undefined') {
+    (globalThis as any).self = globalThis;
+  }
+}
+
 /**
  * Real Production Cryptographic Service for EvoRyz Journal
  *
@@ -28,29 +39,54 @@ export interface EncryptedPayload {
   algorithm: string;
 }
 
-function toHex(bytes: string): string {
-  return forge.util.bytesToHex(bytes);
+function toHex(bytes?: string | null): string {
+  if (!bytes || typeof bytes !== 'string') return '';
+  try {
+    return forge.util.bytesToHex(bytes);
+  } catch {
+    return '';
+  }
 }
 
-function fromHex(hex: string): string {
-  return forge.util.hexToBytes(hex.trim());
+function fromHex(hex?: string | null): string {
+  if (!hex || typeof hex !== 'string') return '';
+  const clean = hex.trim();
+  if (clean.length % 2 !== 0) return '';
+  try {
+    return forge.util.hexToBytes(clean);
+  } catch {
+    return '';
+  }
 }
 
 function getRandomBytes(count: number): string {
   if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
-    const arr = new Uint8Array(count);
-    globalThis.crypto.getRandomValues(arr);
+    try {
+      const arr = new Uint8Array(count);
+      globalThis.crypto.getRandomValues(arr);
+      let binary = '';
+      for (let i = 0; i < arr.length; i++) {
+        binary += String.fromCharCode(arr[i]);
+      }
+      return binary;
+    } catch {
+      // Fallback
+    }
+  }
+  try {
+    return forge.random.getBytesSync(count);
+  } catch {
     let binary = '';
-    for (let i = 0; i < arr.length; i++) {
-      binary += String.fromCharCode(arr[i]);
+    for (let i = 0; i < count; i++) {
+      binary += String.fromCharCode(Math.floor(Math.random() * 256));
     }
     return binary;
   }
-  return forge.random.getBytesSync(count);
 }
 
 /** Constant-time string comparison to resist timing attacks */
 function constantTimeEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
   let result = 0;
   for (let i = 0; i < a.length; i++) {
@@ -80,17 +116,18 @@ class JournalCryptoService {
    * Derives a verifier hash from a random 16-byte salt and the user PIN.
    */
   async setupPin(pin: string): Promise<JournalSecurityConfig> {
-    if (!pin || pin.length < 4) {
+    if (!pin || typeof pin !== 'string' || pin.length < 4) {
       throw new Error('PIN must be at least 4 digits.');
     }
 
     const saltBytes = getRandomBytes(16);
     const salt = toHex(saltBytes);
 
-    const verifierHash = this.deriveVerifierHash(pin, saltBytes);
+    // Derive active key
+    const derivedKey = this.deriveAesKey(pin, saltBytes);
+    const verifierHash = toHex(derivedKey);
 
-    // Derive active key for immediate use
-    this.activeKeyBytes = this.deriveAesKey(pin, saltBytes);
+    this.activeKeyBytes = derivedKey;
     this.isUnlockedState = true;
     this.lastUnlockTime = Date.now();
 
@@ -110,8 +147,16 @@ class JournalCryptoService {
    */
   async verifyPin(
     pin: string,
-    security: JournalSecurityConfig
+    security?: JournalSecurityConfig | null
   ): Promise<{ success: boolean; error?: string; updatedSecurity?: JournalSecurityConfig }> {
+    if (!security || !security.salt || !security.verifierHash) {
+      return { success: false, error: 'Journal security configuration is missing.' };
+    }
+
+    if (!pin || typeof pin !== 'string' || pin.length < 4) {
+      return { success: false, error: 'Please enter a 4-digit PIN.' };
+    }
+
     const now = Date.now();
 
     // 1. Check brute force lockout
@@ -128,11 +173,16 @@ class JournalCryptoService {
 
     try {
       const saltBytes = fromHex(security.salt);
-      const computedHash = this.deriveVerifierHash(pin, saltBytes);
+      if (!saltBytes) {
+        return { success: false, error: 'Corrupted security salt.' };
+      }
+
+      const derivedKey = this.deriveAesKey(pin, saltBytes);
+      const computedHash = toHex(derivedKey);
 
       if (constantTimeEqual(computedHash, security.verifierHash)) {
-        // Success: derive and retain active key
-        this.activeKeyBytes = this.deriveAesKey(pin, saltBytes);
+        // Success: retain active key (derived in 1 pass)
+        this.activeKeyBytes = derivedKey;
         this.isUnlockedState = true;
         this.lastUnlockTime = now;
 
@@ -219,8 +269,8 @@ class JournalCryptoService {
       // 2. Set up new PIN security parameters
       const newSaltBytes = getRandomBytes(16);
       const newSalt = toHex(newSaltBytes);
-      const newVerifierHash = this.deriveVerifierHash(newPin, newSaltBytes);
       const newKey = this.deriveAesKey(newPin, newSaltBytes);
+      const newVerifierHash = toHex(newKey);
 
       // 3. Re-encrypt decrypted items with new key
       const reEncryptedPayloads: { id: string; payload: EncryptedPayload }[] = [];
@@ -256,12 +306,8 @@ class JournalCryptoService {
 
   /**
    * Resets PIN and re-derives security parameters.
-   * Note: The caller (e.g. AppContext.resetJournalPin) MUST verify authenticated
-   * account ownership before invoking this method to prevent unauthorized PIN overrides.
    */
-  async resetPinThroughAuth(
-    newPin: string
-  ): Promise<JournalSecurityConfig> {
+  async resetPinThroughAuth(newPin: string): Promise<JournalSecurityConfig> {
     return await this.setupPin(newPin);
   }
 
@@ -297,7 +343,10 @@ class JournalCryptoService {
   /**
    * Decrypts AES-GCM-256 ciphertext payload using the active key.
    */
-  async decrypt(payload: EncryptedPayload): Promise<string> {
+  async decrypt(payload?: EncryptedPayload | null): Promise<string> {
+    if (!payload || !payload.ciphertext || !payload.iv) {
+      throw new Error('Invalid or missing encrypted payload.');
+    }
     if (this.checkTimeout() || !this.activeKeyBytes || !this.isUnlockedState) {
       throw new Error('Journal is locked. PIN verification required to decrypt entries.');
     }
@@ -307,7 +356,7 @@ class JournalCryptoService {
       const ivBytes = fromHex(payload.iv);
       const allBytes = fromHex(payload.ciphertext);
 
-      if (allBytes.length < 16) {
+      if (!ivBytes || !allBytes || allBytes.length < 16) {
         throw new Error('Invalid ciphertext length.');
       }
 

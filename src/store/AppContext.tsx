@@ -897,14 +897,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!res.success) {
           if (res.updatedSecurity) {
             update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
-            void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+            if (isUUID(state.user.id)) {
+              void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+            }
           }
           return { success: false, error: res.error };
         }
 
-        // Successfully verified: decrypt all entries into in-memory array
+        // Successfully verified: decrypt all valid entries into in-memory array
         const decrypted: { id: string; plaintext: string; timestamp: string; date: string }[] = [];
-        for (const entry of state.journal) {
+        for (const entry of state.journal || []) {
+          if (!entry || !entry.id) continue;
+          const entryDate = entry.date || evoryzDay();
+          const entryTime = entry.timestamp || new Date().toISOString();
           try {
             const pt = await journalCrypto.decrypt({
               ciphertext: entry.encryptedContent,
@@ -914,15 +919,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             decrypted.push({
               id: entry.id,
               plaintext: pt,
-              timestamp: entry.timestamp,
-              date: entry.date,
+              timestamp: entryTime,
+              date: entryDate,
             });
           } catch {
             decrypted.push({
               id: entry.id,
               plaintext: '[Encrypted Entry — Key Mismatch]',
-              timestamp: entry.timestamp,
-              date: entry.date,
+              timestamp: entryTime,
+              date: entryDate,
             });
           }
         }
@@ -932,7 +937,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         if (res.updatedSecurity) {
           update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
-          void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+          if (isUUID(state.user.id)) {
+            void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+          }
         }
 
         return { success: true };
@@ -947,8 +954,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setupJournalPin: async (pin: string) => {
         const securityConfig = await journalCrypto.setupPin(pin);
         setIsJournalUnlocked(true);
+        setDecryptedEntries([]);
         update((p) => ({ ...p, journalSecurity: securityConfig }));
-        void supabaseRepo.saveJournalSecurity(state.user.id, securityConfig);
+        if (isUUID(state.user.id)) {
+          void supabaseRepo.saveJournalSecurity(state.user.id, securityConfig);
+        }
       },
 
       changeJournalPin: async (currentPin: string, newPin: string) => {
@@ -956,10 +966,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return { success: false, error: 'No PIN set.' };
         }
 
-        const payloads: { id: string; payload: EncryptedPayload }[] = state.journal.map((j) => ({
-          id: j.id,
-          payload: { ciphertext: j.encryptedContent, iv: j.iv, algorithm: j.algorithm },
-        }));
+        const payloads: { id: string; payload: EncryptedPayload }[] = (state.journal || [])
+          .filter((j) => j && j.id && j.encryptedContent && j.iv)
+          .map((j) => ({
+            id: j.id,
+            payload: { ciphertext: j.encryptedContent, iv: j.iv, algorithm: j.algorithm },
+          }));
 
         const result = await journalCrypto.changePin(currentPin, newPin, state.journalSecurity, payloads);
         if (!result.success || !result.updatedSecurity) {
@@ -975,7 +987,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             journal: p.journal.map((j) => {
               const np = payloadMap.get(j.id);
               if (np) {
-                void supabaseRepo.updateJournalEntry(j.id, np.ciphertext, np.iv);
+                if (isUUID(j.id)) {
+                  void supabaseRepo.updateJournalEntry(j.id, np.ciphertext, np.iv);
+                }
                 return { ...j, encryptedContent: np.ciphertext, iv: np.iv };
               }
               return j;
@@ -985,7 +999,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           update((p) => ({ ...p, journalSecurity: result.updatedSecurity }));
         }
 
-        void supabaseRepo.saveJournalSecurity(state.user.id, result.updatedSecurity);
+        if (isUUID(state.user.id)) {
+          void supabaseRepo.saveJournalSecurity(state.user.id, result.updatedSecurity);
+        }
         return { success: true };
       },
 
@@ -998,11 +1014,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         const securityConfig = await journalCrypto.resetPinThroughAuth(newPin);
         setIsJournalUnlocked(true);
+        setDecryptedEntries([]);
         update((p) => ({ ...p, journalSecurity: securityConfig }));
         await supabaseRepo.saveJournalSecurity(currentSession.user.id, securityConfig);
       },
 
       addJournalEntry: async (content: string) => {
+        const todayDay = evoryzDay();
         const encPayload = await journalCrypto.encrypt(content);
         const newEntry: JournalEntry = {
           id: newId(),
@@ -1010,11 +1028,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           encryptedContent: encPayload.ciphertext,
           iv: encPayload.iv,
           algorithm: encPayload.algorithm,
-          date: state.activeDay,
+          date: todayDay,
           timestamp: stamp(),
         };
 
-        void supabaseRepo.insertJournalEntry(newEntry);
+        if (isUUID(state.user.id)) {
+          void supabaseRepo.insertJournalEntry(newEntry);
+        }
 
         setDecryptedEntries((prev) => [
           ...prev,
@@ -1030,7 +1050,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
 
       deleteJournalEntry: async (id: string) => {
-        void supabaseRepo.deleteJournalEntry(id);
+        if (isUUID(id)) {
+          void supabaseRepo.deleteJournalEntry(id);
+        }
         setDecryptedEntries((prev) => prev.filter((e) => e.id !== id));
         update((p) => ({ ...p, journal: p.journal.filter((j) => j.id !== id) }));
       },
