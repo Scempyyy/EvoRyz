@@ -7,6 +7,12 @@ jest.mock('../utils/supabase', () => ({
     from: jest.fn(),
     channel: jest.fn(),
     removeChannel: jest.fn().mockResolvedValue('ok'),
+    storage: {
+      from: jest.fn(() => ({
+        upload: jest.fn().mockResolvedValue({ data: { path: 'test' }, error: null }),
+        createSignedUrl: jest.fn().mockResolvedValue({ data: { signedUrl: 'https://test' }, error: null }),
+      })),
+    },
     auth: {
       getSession: jest.fn().mockResolvedValue({ data: { session: null }, error: null }),
     },

@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, router } from 'expo-router';
 import {
+  ActivityIndicator,
   Animated,
   BackHandler,
   Image,
@@ -19,6 +20,8 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
+import * as WebBrowser from 'expo-web-browser';
+import { useResolvedMediaUrl } from '@/src/services/mediaResolver';
 import { Ionicons } from '@expo/vector-icons';
 import {
   RecordingPresets,
@@ -1317,18 +1320,32 @@ function MessageBubble({
 }
 
 function ImageMessage({ message, onOpen }: { message: Message; onOpen: (m: Message) => void }) {
+  const resolvedUri = useResolvedMediaUrl(message.uri);
   const [failed, setFailed] = useState(false);
-  if (!message.uri || failed)
+  const [loading, setLoading] = useState(true);
+
+  if (!message.uri || failed) {
     return (
       <View style={s.mediaFallback}>
         <Ionicons name="image-outline" size={28} color="#ded8ea" />
         <Text style={s.fallbackText}>Image unavailable</Text>
       </View>
     );
+  }
+
+  if (!resolvedUri) {
+    return (
+      <View style={[s.mediaFallback, { minHeight: 120, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="small" color={colors.violetLight} />
+      </View>
+    );
+  }
+
   return (
-    <Pressable onPress={() => onOpen(message)}>
+    <Pressable onPress={() => onOpen({ ...message, uri: resolvedUri })}>
       <Image
-        source={{ uri: message.uri }}
+        source={{ uri: resolvedUri }}
+        onLoadEnd={() => setLoading(false)}
         onError={() => setFailed(true)}
         style={[
           s.image,
@@ -1337,13 +1354,23 @@ function ImageMessage({ message, onOpen }: { message: Message; onOpen: (m: Messa
         resizeMode="cover"
         accessibilityLabel="Open image"
       />
+      {loading ? (
+        <View style={[StyleSheet.absoluteFill, { justifyContent: 'center', alignItems: 'center' }]}>
+          <ActivityIndicator size="small" color={colors.violetLight} />
+        </View>
+      ) : null}
     </Pressable>
   );
 }
 
 function VideoMessage({ message, onOpen }: { message: Message; onOpen: (m: Message) => void }) {
+  const resolvedUri = useResolvedMediaUrl(message.uri);
   return (
-    <Pressable style={s.videoPreview} onPress={() => onOpen(message)} accessibilityLabel="Play video">
+    <Pressable
+      style={s.videoPreview}
+      onPress={() => onOpen(resolvedUri ? { ...message, uri: resolvedUri } : message)}
+      accessibilityLabel="Play video"
+    >
       <Ionicons name="videocam" size={30} color="white" />
       <View style={s.play}>
         <Ionicons name="play" size={21} color={colors.bg} />
@@ -1354,12 +1381,19 @@ function VideoMessage({ message, onOpen }: { message: Message; onOpen: (m: Messa
 }
 
 function FileMessage({ message }: { message: Message }) {
+  const resolvedUri = useResolvedMediaUrl(message.uri);
   const open = async () => {
-    if (message.uri && (await Sharing.isAvailableAsync()))
-      await Sharing.shareAsync(message.uri, {
-        mimeType: message.mimeType,
-        dialogTitle: message.attachmentName ?? 'Open attachment',
-      });
+    const targetUri = resolvedUri || message.uri;
+    if (targetUri) {
+      if (targetUri.startsWith('http://') || targetUri.startsWith('https://')) {
+        await WebBrowser.openBrowserAsync(targetUri);
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(targetUri, {
+          mimeType: message.mimeType,
+          dialogTitle: message.attachmentName ?? 'Open attachment',
+        });
+      }
+    }
   };
   return (
     <Pressable style={s.file} onPress={() => void open()}>
@@ -1379,7 +1413,8 @@ function FileMessage({ message }: { message: Message }) {
 }
 
 function VoiceMessage({ message }: { message: Message }) {
-  const player = useAudioPlayer(message.uri ?? null, { updateInterval: 160 });
+  const resolvedUri = useResolvedMediaUrl(message.uri);
+  const player = useAudioPlayer(resolvedUri ?? null, { updateInterval: 160 });
   const status = useAudioPlayerStatus(player);
   const duration = message.duration ?? status.duration ?? 0;
   const progress = duration ? Math.min(1, status.currentTime / duration) : 0;
@@ -1387,19 +1422,32 @@ function VoiceMessage({ message }: { message: Message }) {
   useEffect(() => () => voicePlayback.clear(message.id), [message.id]);
 
   const toggle = () => {
-    if (status.playing) {
-      player.pause();
-      voicePlayback.clear(message.id);
-    } else {
-      voicePlayback.activate(message.id, () => player.pause());
-      player.play();
+    try {
+      if (!resolvedUri) return;
+      if (status.playing) {
+        player.pause();
+        voicePlayback.clear(message.id);
+      } else {
+        voicePlayback.activate(message.id, () => {
+          try {
+            player.pause();
+          } catch {}
+        });
+        player.play();
+      }
+    } catch (e) {
+      console.warn('[VoiceMessage] playback toggle error:', e);
     }
   };
 
   return (
     <View style={s.voice}>
-      <Pressable style={s.voicePlay} onPress={toggle}>
-        <Ionicons name={status.playing ? 'pause' : 'play'} size={19} color={colors.bg} />
+      <Pressable style={s.voicePlay} onPress={toggle} disabled={!resolvedUri}>
+        {!resolvedUri ? (
+          <ActivityIndicator size="small" color={colors.bg} />
+        ) : (
+          <Ionicons name={status.playing ? 'pause' : 'play'} size={19} color={colors.bg} />
+        )}
       </Pressable>
       <View style={s.wave}>
         {Array.from({ length: 18 }, (_, i) => (
@@ -1421,6 +1469,7 @@ function VoiceMessage({ message }: { message: Message }) {
 }
 
 function MediaViewer({ message, onClose }: { message: Message | null; onClose: () => void }) {
+  const resolvedUri = useResolvedMediaUrl(message?.uri);
   return (
     <Modal visible={Boolean(message)} transparent animationType="fade" onRequestClose={onClose}>
       {message && (
@@ -1429,9 +1478,13 @@ function MediaViewer({ message, onClose }: { message: Message | null; onClose: (
             <Ionicons name="close" size={28} color="white" />
           </Pressable>
           {message.type === 'video' ? (
-            <VideoPlayer uri={message.uri} />
+            <VideoPlayer uri={resolvedUri || message.uri} />
           ) : (
-            <Image source={{ uri: message.uri }} style={s.fullImage} resizeMode="contain" />
+            <Image
+              source={{ uri: resolvedUri || message.uri }}
+              style={s.fullImage}
+              resizeMode="contain"
+            />
           )}
         </View>
       )}
@@ -1440,7 +1493,8 @@ function MediaViewer({ message, onClose }: { message: Message | null; onClose: (
 }
 
 function VideoPlayer({ uri }: { uri?: string }) {
-  const player = useVideoPlayer(uri ?? null, (p) => {
+  const resolvedUri = useResolvedMediaUrl(uri);
+  const player = useVideoPlayer(resolvedUri ?? null, (p) => {
     p.loop = false;
   });
   return <VideoView style={s.fullVideo} player={player} nativeControls contentFit="contain" />;

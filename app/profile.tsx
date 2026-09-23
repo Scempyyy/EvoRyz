@@ -366,10 +366,24 @@ export default function Profile() {
       {/* ==================================================================== */}
 
       {/* 1. Account Modal */}
-      <Modal visible={activeModal === 'account'} transparent animationType="fade">
+      <Modal visible={activeModal === 'account'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Account</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => setActiveModal(null)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Account</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
             <View style={s.modalRow}>
               <Text style={s.modalLabel}>Display Name</Text>
               <Text style={s.modalVal}>{user.name}</Text>
@@ -403,7 +417,25 @@ export default function Profile() {
       <Modal visible={activeModal === 'username'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Change Username</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => {
+                  setActiveModal(null);
+                  setUsernameError(null);
+                  setUsernameSuccess(null);
+                }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Change Username</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
             <Text style={s.modalBody}>
               Your unique handle within EvoRyz. 3–20 characters, letters, numbers, and underscores only.
             </Text>
@@ -465,10 +497,24 @@ export default function Profile() {
       </Modal>
 
       {/* 2. Security Modal */}
-      <Modal visible={activeModal === 'security'} transparent animationType="fade">
+      <Modal visible={activeModal === 'security'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Journal Security</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => setActiveModal(null)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Journal Security</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
             <Text style={s.modalBody}>
               Protected with PBKDF2-HMAC-SHA256 (100,000 rounds) and AES-GCM-256 zero-knowledge encryption.
             </Text>
@@ -529,10 +575,24 @@ export default function Profile() {
       </Modal>
 
       {/* 3. Privacy Modal */}
-      <Modal visible={activeModal === 'privacy'} transparent animationType="fade">
+      <Modal visible={activeModal === 'privacy'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Privacy & Sharing</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => setActiveModal(null)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Privacy & Sharing</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
             <Text style={s.modalBody}>
               EvoRyz is built on strict data boundaries. Private items are protected by Supabase Row Level Security and are visible only to your user ID.
             </Text>
@@ -568,7 +628,7 @@ export default function Profile() {
       </Modal>
 
       {/* 4. Workspace Modal */}
-      <Modal visible={activeModal === 'workspace'} transparent animationType="fade">
+      <Modal visible={activeModal === 'workspace'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -708,10 +768,24 @@ export default function Profile() {
       </Modal>
 
       {/* 5. Data Modal */}
-      <Modal visible={activeModal === 'data'} transparent animationType="fade">
+      <Modal visible={activeModal === 'data'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Data & Storage</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => setActiveModal(null)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Data & Storage</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
             <Text style={s.modalBody}>
               EvoRyz synchronizes with Supabase cloud database while maintaining an offline-ready cache on this device.
             </Text>

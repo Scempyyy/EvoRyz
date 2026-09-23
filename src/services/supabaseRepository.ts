@@ -471,6 +471,107 @@ export class SupabaseRepository {
     }
   }
 
+  async uploadWorkspaceMedia(
+    workspaceId: string,
+    messageId: string,
+    localUri: string,
+    mimeType?: string,
+    fileName?: string
+  ): Promise<string | null> {
+    try {
+      if (!isUUID(workspaceId) || !localUri) return null;
+
+      let ext = 'bin';
+      let contentType = mimeType || 'application/octet-stream';
+
+      if (fileName && fileName.includes('.')) {
+        const parts = fileName.split('.');
+        const cand = parts[parts.length - 1]?.toLowerCase();
+        if (cand && cand.length <= 5) ext = cand;
+      } else if (localUri.includes('.')) {
+        const cleanUri = localUri.split('?')[0];
+        const parts = cleanUri.split('.');
+        const cand = parts[parts.length - 1]?.toLowerCase();
+        if (cand && cand.length <= 5 && !cand.includes('/')) ext = cand;
+      }
+
+      if (ext === 'bin' && mimeType) {
+        if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = 'jpg';
+        else if (mimeType.includes('png')) ext = 'png';
+        else if (mimeType.includes('gif')) ext = 'gif';
+        else if (mimeType.includes('webp')) ext = 'webp';
+        else if (mimeType.includes('m4a') || mimeType.includes('mp4a')) ext = 'm4a';
+        else if (mimeType.includes('mp3')) ext = 'mp3';
+        else if (mimeType.includes('aac')) ext = 'aac';
+        else if (mimeType.includes('wav')) ext = 'wav';
+        else if (mimeType.includes('mp4')) ext = 'mp4';
+        else if (mimeType.includes('quicktime')) ext = 'mov';
+        else if (mimeType.includes('pdf')) ext = 'pdf';
+      }
+
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        if (ext === 'jpg' || ext === 'jpeg') contentType = 'image/jpeg';
+        else if (ext === 'png') contentType = 'image/png';
+        else if (ext === 'gif') contentType = 'image/gif';
+        else if (ext === 'webp') contentType = 'image/webp';
+        else if (ext === 'm4a') contentType = 'audio/m4a';
+        else if (ext === 'mp3') contentType = 'audio/mpeg';
+        else if (ext === 'wav') contentType = 'audio/wav';
+        else if (ext === 'mp4') contentType = 'video/mp4';
+        else if (ext === 'pdf') contentType = 'application/pdf';
+      }
+
+      const storagePath = `${workspaceId}/${ensureUUID(messageId)}.${ext}`;
+
+      const res = await fetch(localUri);
+      const blob = await res.blob();
+
+      const { data, error } = await supabase.storage
+        .from('workspace-media')
+        .upload(storagePath, blob, {
+          contentType,
+          upsert: true,
+        });
+
+      if (error) {
+        console.warn('[SupabaseRepository] uploadWorkspaceMedia error:', error.message);
+        return null;
+      }
+
+      return data?.path || storagePath;
+    } catch (err: unknown) {
+      console.warn('[SupabaseRepository] uploadWorkspaceMedia exception:', err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  async getSignedMediaUrl(path: string, expiresIn = 86400): Promise<string | null> {
+    try {
+      if (!path) return null;
+      const cleanPath = path.replace(/^workspace-media\//, '').replace(/^\/+/, '');
+      if (cleanPath.startsWith('http://') || cleanPath.startsWith('https://')) {
+        return cleanPath;
+      }
+      if (cleanPath.startsWith('file://') || cleanPath.startsWith('content://')) {
+        return null;
+      }
+
+      const { data, error } = await supabase.storage
+        .from('workspace-media')
+        .createSignedUrl(cleanPath, expiresIn);
+
+      if (error) {
+        console.warn('[SupabaseRepository] getSignedMediaUrl error:', error.message);
+        return null;
+      }
+
+      return data?.signedUrl || null;
+    } catch (err) {
+      console.warn('[SupabaseRepository] getSignedMediaUrl exception:', err);
+      return null;
+    }
+  }
+
   async insertMessage(message: Message): Promise<{ success: boolean; error?: string }> {
     if (!isUUID(message.senderId)) return { success: false, error: 'Invalid sender ID' };
     const msgId = ensureUUID(message.id);
@@ -479,6 +580,20 @@ export class SupabaseRepository {
     const validDbTypes = ['text', 'image', 'video', 'file', 'voice'];
     const dbMessageType = validDbTypes.includes(msgType) ? msgType : 'text';
     try {
+      let finalUri = message.uri || null;
+      if (workspaceId && finalUri && (finalUri.startsWith('file://') || finalUri.startsWith('content://'))) {
+        const uploadedPath = await this.uploadWorkspaceMedia(
+          workspaceId,
+          msgId,
+          finalUri,
+          message.mimeType,
+          message.attachmentName
+        );
+        if (uploadedPath) {
+          finalUri = uploadedPath;
+        }
+      }
+
       const payload: Record<string, unknown> = {
         id: msgId,
         workspace_id: workspaceId,
@@ -491,7 +606,7 @@ export class SupabaseRepository {
         status: message.status || 'sent',
         reply_to: message.replyTo && isUUID(message.replyTo) ? message.replyTo : null,
         reactions: message.reactions || [],
-        uri: message.uri || null,
+        uri: finalUri,
         thumbnail_uri: message.thumbnailUri || null,
         attachment_name: message.attachmentName || null,
         mime_type: message.mimeType || null,

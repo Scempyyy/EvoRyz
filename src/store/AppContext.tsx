@@ -453,6 +453,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubscribe = supabaseRepo.subscribeToMessages(
       'workspace',
       (newMsg) => {
+        const isFromMe = newMsg.senderId === (session?.user?.id || state.user.id);
+        if (!isFromMe) {
+          feedback.sound('messageReceived', state.user.settings.preferences.sfx);
+        }
         setState((prev) => {
           if (prev.messages.some((m) => m.id === newMsg.id)) return prev;
           return {
@@ -481,7 +485,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       active = false;
       unsubscribe();
     };
-  }, [state.workspace?.id, session?.access_token, session?.user?.id, chatRetryTrigger]);
+  }, [
+    state.workspace?.id,
+    session?.access_token,
+    session?.user?.id,
+    chatRetryTrigger,
+    state.user.id,
+    state.user.settings.preferences.sfx,
+  ]);
 
   // 5. Reconnect Realtime and refresh state when app returns to foreground
   useEffect(() => {
@@ -909,6 +920,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         update((previous) => {
           const notifications = { ...previous.user.settings.notifications, ...patch };
           localNotificationScheduler.sync(notifications).catch(() => undefined);
+          if (patch.enabled) {
+            feedback.sound('notification', previous.user.settings.preferences.sfx);
+          }
           return {
             ...previous,
             user: {
