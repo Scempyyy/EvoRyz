@@ -533,7 +533,7 @@ function JournalComponent() {
                 <Text
                   style={[s.dayPillText, isSelected && s.dayPillTextActive]}
                 >
-                  {isToday ? 'Today' : displayEvoDay(day)}
+                  {isToday ? 'Today' : safeDisplayDay(day, todayDay)}
                 </Text>
                 {count > 0 && (
                   <View
@@ -636,7 +636,7 @@ function JournalComponent() {
                               isSelected && { color: colors.violetLight },
                             ]}
                           >
-                            {isToday ? 'Today' : displayEvoDay(day)}
+                            {isToday ? 'Today' : safeDisplayDay(day, todayDay)}
                           </Text>
                           {isToday && (
                             <View style={s.todayTag}>
@@ -735,7 +735,7 @@ function JournalComponent() {
           placeholder={
             selectedDay === todayDay
               ? 'Reflect privately… (EvoRyz 2 AM day)'
-              : `Add reflection to Today (${displayEvoDay(todayDay)})…`
+              : 'Add reflection to Today…'
           }
           placeholderTextColor={colors.muted}
           style={s.input}
@@ -863,8 +863,10 @@ function WorkspaceChatComponent() {
         <View style={{ flex: 1 }}>
           <Text style={s.title}>{title}</Text>
           <Text style={s.sub}>
-            {workspace
+            {workspace && workspace.members.length > 0
               ? `${workspace.members.length} members · Live Supabase Realtime`
+              : workspace
+              ? 'Connecting… · Live Supabase Realtime'
               : 'Connect Duo or Team to sync shared chat'}
           </Text>
         </View>

@@ -324,8 +324,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       journal: prev.journal.map((j) => (j.ownerId === 'me' || j.ownerId === 'unauthenticated' || !isUUID(j.ownerId) ? { ...j, ownerId: uid, id: ensureUUID(j.id) } : { ...j, id: ensureUUID(j.id) })),
     }));
 
-    // Upsert profile in Supabase
-    void supabaseRepo.upsertProfile({
+    // Ensure profile in Supabase
+    void supabaseRepo.ensureProfile({
       id: uid,
       email,
       name: fullName,
@@ -346,16 +346,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
         supabaseRepo.fetchUserWorkspace(uid),
       ]);
 
-      setState((prev) => ({
-        ...prev,
-        tasks: dbTasks.length ? dbTasks : prev.tasks,
-        habits: dbHabits.length ? dbHabits : prev.habits,
-        goals: dbGoals.length ? dbGoals : prev.goals,
-        meals: dbMeals.length ? dbMeals : prev.meals,
-        journal: dbJournal.length ? dbJournal : prev.journal,
-        journalSecurity: dbSecurity ?? prev.journalSecurity,
-        workspace: dbWorkspace ?? prev.workspace,
-      }));
+      setState((prev) => {
+        let resolvedWorkspace = prev.workspace;
+        let resolvedMode = prev.mode;
+
+        if (dbWorkspace !== undefined) {
+          if (dbWorkspace === null) {
+            // Cloud confirmed user has no workspace membership (Solo mode)
+            resolvedWorkspace = undefined;
+            resolvedMode = 'solo';
+          } else {
+            // Cloud returned workspace
+            resolvedMode = dbWorkspace.mode;
+            if (dbWorkspace.members.length > 0) {
+              resolvedWorkspace = dbWorkspace;
+            } else if (prev.workspace?.id === dbWorkspace.id && prev.workspace.members.length > 0) {
+              resolvedWorkspace = { ...dbWorkspace, members: prev.workspace.members };
+            } else {
+              resolvedWorkspace = {
+                ...dbWorkspace,
+                members: [{ id: uid, name: fullName || 'You', avatar: avatar || 'Y' }],
+              };
+            }
+          }
+        }
+
+        return {
+          ...prev,
+          mode: resolvedMode,
+          tasks: dbTasks.length ? dbTasks : prev.tasks,
+          habits: dbHabits.length ? dbHabits : prev.habits,
+          goals: dbGoals.length ? dbGoals : prev.goals,
+          meals: dbMeals.length ? dbMeals : prev.meals,
+          journal: dbJournal.length ? dbJournal : prev.journal,
+          journalSecurity: dbSecurity ?? prev.journalSecurity,
+          workspace: resolvedWorkspace,
+        };
+      });
     } catch (err) {
       console.warn('[AppContext] Cloud sync error:', err);
     }
@@ -406,15 +433,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       .catch((err) => console.warn('[AppContext] fetchMessages error:', err));
 
-    const unsubscribe = supabaseRepo.subscribeToMessages('workspace', (newMsg) => {
-      setState((prev) => {
-        if (prev.messages.some((m) => m.id === newMsg.id)) return prev;
-        return {
-          ...prev,
-          messages: [...prev.messages, newMsg],
-        };
-      });
-    });
+    const unsubscribe = supabaseRepo.subscribeToMessages(
+      'workspace',
+      (newMsg) => {
+        setState((prev) => {
+          if (prev.messages.some((m) => m.id === newMsg.id)) return prev;
+          return {
+            ...prev,
+            messages: [...prev.messages, newMsg],
+          };
+        });
+      },
+      wsId
+    );
 
     return () => {
       active = false;
@@ -577,7 +608,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         feedback.tap(state.user.settings.preferences.haptics);
-        const res = await supabaseRepo.joinWorkspaceByInviteCode(cleanCode);
+        const res = await supabaseRepo.joinWorkspaceByInviteCode(cleanCode, state.user.id);
 
         if (res.success && res.workspace) {
           feedback.success(state.user.settings.preferences.haptics);
@@ -907,61 +938,75 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // JOURNAL SECURITY & ENCRYPTED CONTENT
       // ----------------------------------------------------------------------
       unlockJournal: async (pin: string) => {
-        const currentSec = state.journalSecurity;
-        if (!currentSec) {
-          return { success: false, error: 'Journal PIN has not been configured yet.' };
-        }
+        try {
+          const currentSec = state.journalSecurity;
+          if (!currentSec) {
+            return { success: false, error: 'Journal PIN has not been configured yet.' };
+          }
 
-        const res = await journalCrypto.verifyPin(pin, currentSec);
-        if (!res.success) {
+          const res = await journalCrypto.verifyPin(pin, currentSec);
+          if (!res.success) {
+            if (res.updatedSecurity) {
+              update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
+              if (isUUID(state.user.id)) {
+                void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
+              }
+            }
+            return { success: false, error: res.error || 'Incorrect PIN.' };
+          }
+
+          // Successfully verified: decrypt all valid entries into in-memory array
+          const decrypted: { id: string; plaintext: string; timestamp: string; date: string }[] = [];
+          for (const entry of state.journal || []) {
+            if (!entry || !entry.id) continue;
+            const entryDate = entry.date || evoryzDay();
+            const entryTime = entry.timestamp || new Date().toISOString();
+            if (!entry.encryptedContent || !entry.iv) {
+              decrypted.push({
+                id: entry.id,
+                plaintext: '[Corrupted Entry — Missing ciphertext]',
+                timestamp: entryTime,
+                date: entryDate,
+              });
+              continue;
+            }
+            try {
+              const pt = await journalCrypto.decrypt({
+                ciphertext: entry.encryptedContent,
+                iv: entry.iv,
+                algorithm: entry.algorithm,
+              });
+              decrypted.push({
+                id: entry.id,
+                plaintext: pt,
+                timestamp: entryTime,
+                date: entryDate,
+              });
+            } catch {
+              decrypted.push({
+                id: entry.id,
+                plaintext: '[Encrypted Entry — Key Mismatch]',
+                timestamp: entryTime,
+                date: entryDate,
+              });
+            }
+          }
+
+          setIsJournalUnlocked(true);
+          setDecryptedEntries(decrypted);
+
           if (res.updatedSecurity) {
             update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
             if (isUUID(state.user.id)) {
               void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
             }
           }
-          return { success: false, error: res.error };
+
+          return { success: true };
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Failed to unlock journal';
+          return { success: false, error: msg };
         }
-
-        // Successfully verified: decrypt all valid entries into in-memory array
-        const decrypted: { id: string; plaintext: string; timestamp: string; date: string }[] = [];
-        for (const entry of state.journal || []) {
-          if (!entry || !entry.id) continue;
-          const entryDate = entry.date || evoryzDay();
-          const entryTime = entry.timestamp || new Date().toISOString();
-          try {
-            const pt = await journalCrypto.decrypt({
-              ciphertext: entry.encryptedContent,
-              iv: entry.iv,
-              algorithm: entry.algorithm,
-            });
-            decrypted.push({
-              id: entry.id,
-              plaintext: pt,
-              timestamp: entryTime,
-              date: entryDate,
-            });
-          } catch {
-            decrypted.push({
-              id: entry.id,
-              plaintext: '[Encrypted Entry — Key Mismatch]',
-              timestamp: entryTime,
-              date: entryDate,
-            });
-          }
-        }
-
-        setIsJournalUnlocked(true);
-        setDecryptedEntries(decrypted);
-
-        if (res.updatedSecurity) {
-          update((p) => ({ ...p, journalSecurity: res.updatedSecurity }));
-          if (isUUID(state.user.id)) {
-            void supabaseRepo.saveJournalSecurity(state.user.id, res.updatedSecurity);
-          }
-        }
-
-        return { success: true };
       },
 
       lockJournal: () => {

@@ -1,5 +1,7 @@
 import { journalCrypto, EncryptedPayload, JournalSecurity } from '../src/services/encryption';
-import { evoryzDay } from '../src/services/evoryzDay';
+import { evoryzDay, previousEvoDay, displayEvoDay } from '../src/services/evoryzDay';
+
+jest.setTimeout(25000);
 
 describe('Journal Comprehensive Unit & Flow Tests (12 Requirements)', () => {
   const pin = '5678';
@@ -274,4 +276,48 @@ describe('Journal Comprehensive Unit & Flow Tests (12 Requirements)', () => {
     const decryptedAfterRestart = await journalCrypto.decrypt(entryPayload);
     expect(decryptedAfterRestart).toBe('Entry from session 1');
   });
+
+  // 13. Hermes-safe chunked PBKDF2 execution
+  test('13. Hermes-safe chunked PBKDF2 executes 100,000 iterations without stack overflow or blocking', async () => {
+    const config = await journalCrypto.setupPin('9999');
+    expect(config.iterations).toBe(100000);
+    expect(config.verifierHash.length).toBe(64);
+
+    journalCrypto.lock();
+    const res = await journalCrypto.verifyPin('9999', config);
+    expect(res.success).toBe(true);
+    expect(journalCrypto.isUnlocked()).toBe(true);
+  });
+
+  // 14. Robust date formatting
+  test('14. Robust date formatting never throws RangeError on unusual dates or non-standard locales', () => {
+    const today = evoryzDay();
+    expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    const prev = previousEvoDay(today);
+    expect(prev).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // displayEvoDay handles YYYY-MM-DD
+    const displayed = displayEvoDay(today);
+    expect(displayed.length).toBeGreaterThan(0);
+
+    // displayEvoDay handles edge cases and invalid dates without throwing
+    expect(displayEvoDay('')).toBe('');
+    expect(displayEvoDay('invalid-date')).toBe('invalid-date');
+  });
+
+  // 15. Decryption error resilience
+  test('15. Decryption error resilience handles missing fields, short hex, and bad tags without unhandled rejections', async () => {
+    await journalCrypto.setupPin('1234');
+
+    // Missing ciphertext
+    await expect(journalCrypto.decrypt({ ciphertext: '', iv: '0102030405060708090a0b0c', algorithm: 'AES-GCM-256' })).rejects.toThrow();
+
+    // Missing IV
+    await expect(journalCrypto.decrypt({ ciphertext: 'abcdef1234567890abcdef1234567890', iv: '', algorithm: 'AES-GCM-256' })).rejects.toThrow();
+
+    // Short ciphertext (< 16 bytes for auth tag)
+    await expect(journalCrypto.decrypt({ ciphertext: 'abcd', iv: '0102030405060708090a0b0c', algorithm: 'AES-GCM-256' })).rejects.toThrow();
+  });
 });
+

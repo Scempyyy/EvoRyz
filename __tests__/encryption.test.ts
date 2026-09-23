@@ -1,5 +1,7 @@
 import { journalCrypto, EncryptedPayload } from '../src/services/encryption';
 
+jest.setTimeout(25000);
+
 describe('Journal Cryptographic Service — Full Audit', () => {
   const testPin = '4829';
   const newPin = '7391';

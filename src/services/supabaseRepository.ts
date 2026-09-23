@@ -66,6 +66,32 @@ export class SupabaseRepository {
     }
   }
 
+  async ensureProfile(user: Partial<User> & { id: string }): Promise<void> {
+    if (!isUUID(user.id)) return;
+    try {
+      // 1. Try secure RPC ensure_profile_exists
+      const { error: rpcErr } = await supabase.rpc('ensure_profile_exists', {
+        target_user_id: user.id,
+      });
+      if (!rpcErr) return;
+
+      // 2. Direct upsert fallback
+      await supabase.from('profiles').upsert(
+        {
+          id: user.id,
+          email: user.email ?? null,
+          name: user.name ?? 'User',
+          username: user.username ?? `user_${user.id.slice(0, 8)}`,
+          avatar_url: user.avatar ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+    } catch (err) {
+      console.warn('[SupabaseRepository] ensureProfile error:', err);
+    }
+  }
+
   async updateUsername(
     userId: string,
     newUsername: string
@@ -471,14 +497,16 @@ export class SupabaseRepository {
 
   subscribeToMessages(
     conversationId: string,
-    onNewMessage: (msg: Message) => void
+    onNewMessage: (msg: Message) => void,
+    workspaceId?: string
   ): () => void {
     if (this.messageChannel) {
       supabase.removeChannel(this.messageChannel);
     }
 
+    const channelName = workspaceId ? `chat-${conversationId}-${workspaceId}` : `chat-${conversationId}`;
     this.messageChannel = supabase
-      .channel(`chat-${conversationId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -490,6 +518,10 @@ export class SupabaseRepository {
         (payload) => {
           const row = payload.new;
           if (row) {
+            // Guard against cross-workspace message ingestion
+            if (workspaceId && row.workspace_id && row.workspace_id !== workspaceId) {
+              return;
+            }
             onNewMessage({
               id: row.id,
               workspaceId: row.workspace_id ?? undefined,
@@ -640,19 +672,40 @@ export class SupabaseRepository {
   async loadWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
     if (!isUUID(workspaceId)) return [];
     try {
-      const { data: allMembers, error } = await supabase
+      // 1. Fetch workspace_members directly
+      const { data: memRows, error: memErr } = await supabase
         .from('workspace_members')
-        .select('user_id, role, profiles(name, avatar_url)')
+        .select('user_id, role')
         .eq('workspace_id', workspaceId);
 
-      if (error || !allMembers) return [];
+      if (memErr || !memRows || !memRows.length) return [];
 
-      return allMembers.map((m: unknown) => {
-        const row = m as { user_id: string; role: string; profiles?: { name?: string; avatar_url?: string } };
+      // 2. Fetch profiles for all member user_ids
+      const userIds = memRows.map((r) => r.user_id).filter(isUUID);
+      const profileMap = new Map<string, { name?: string | null; avatar_url?: string | null }>();
+
+      if (userIds.length > 0) {
+        try {
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, name, avatar_url')
+            .in('id', userIds);
+
+          (profiles || []).forEach((p) => {
+            if (p?.id) profileMap.set(p.id, p);
+          });
+        } catch {
+          // Graceful fallback to default initials
+        }
+      }
+
+      return memRows.map((row) => {
+        const prof = profileMap.get(row.user_id);
+        const name = prof?.name || (row.role === 'owner' ? 'Owner' : 'Member');
         return {
           id: row.user_id,
-          name: row.profiles?.name || 'Member',
-          avatar: row.profiles?.avatar_url || row.profiles?.name?.charAt(0)?.toUpperCase() || 'M',
+          name,
+          avatar: prof?.avatar_url || name.charAt(0).toUpperCase() || 'M',
         };
       });
     } catch {
@@ -674,7 +727,11 @@ export class SupabaseRepository {
       const wsData = (memberRows[0] as unknown as { workspaces: { id: string; name: string; mode: 'duo' | 'team'; invite_code: string } }).workspaces;
       if (!wsData) return null;
 
-      const members = await this.loadWorkspaceMembers(wsData.id);
+      let members = await this.loadWorkspaceMembers(wsData.id);
+      // Fallback: at minimum, the current user is a confirmed member of this workspace
+      if (!members || members.length === 0) {
+        members = [{ id: userId, name: 'You', avatar: 'Y' }];
+      }
 
       return {
         id: wsData.id,
@@ -700,6 +757,9 @@ export class SupabaseRepository {
   ): Promise<Workspace | null> {
     if (!isUUID(userId)) return null;
     try {
+      // Pre-flight: guarantee creator profile exists before workspace_members foreign key evaluates
+      await this.ensureProfile({ id: userId });
+
       // 1. Try secure RPC
       const { data: rpcData, error: rpcErr } = await supabase.rpc('create_workspace_secure', {
         name_input: name.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
@@ -739,6 +799,7 @@ export class SupabaseRepository {
         return null;
       }
 
+      await this.ensureProfile({ id: userId });
       await supabase.from('workspace_members').upsert({
         workspace_id: wsRow.id,
         user_id: userId,
@@ -760,7 +821,8 @@ export class SupabaseRepository {
   }
 
   async joinWorkspaceByInviteCode(
-    inviteCode: string
+    inviteCode: string,
+    userId?: string
   ): Promise<{ success: boolean; workspace?: Workspace; error?: string }> {
     const cleanCode = inviteCode.trim().toUpperCase();
     if (!cleanCode) {
@@ -768,6 +830,10 @@ export class SupabaseRepository {
     }
 
     try {
+      if (userId && isUUID(userId)) {
+        await this.ensureProfile({ id: userId });
+      }
+
       // 1. Execute secure RPC (checks invite code, server-side Duo 2-member limit, prevents duplicate membership)
       const { data: rpcData, error: rpcErr } = await supabase.rpc('join_workspace_by_invite', {
         invite_code_input: cleanCode,

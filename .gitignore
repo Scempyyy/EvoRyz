@@ -19,4 +19,4 @@ node_modules/
 node_modules/
 
 # Expo local state
-
+supabase/.temp/

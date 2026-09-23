@@ -25,24 +25,45 @@ describe('Workspace Lifecycle & Invite System', () => {
   });
 
   it('createWorkspace calls create_workspace_secure RPC and returns structured workspace', async () => {
-    (supabase.rpc as jest.Mock).mockResolvedValueOnce({
-      data: {
-        id: mockWsId,
-        name: 'Alpha Team',
-        mode: 'team',
-        invite_code: 'EVR-TEST01',
-      },
-      error: null,
+    (supabase.rpc as jest.Mock).mockImplementation((fn: string) => {
+      if (fn === 'ensure_profile_exists') {
+        return Promise.resolve({ data: null, error: null });
+      }
+      if (fn === 'create_workspace_secure') {
+        return Promise.resolve({
+          data: {
+            id: mockWsId,
+            name: 'Alpha Team',
+            mode: 'team',
+            invite_code: 'EVR-TEST01',
+          },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: null, error: null });
     });
 
-    const mockFrom = {
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockResolvedValueOnce({
-        data: [{ user_id: mockUserId, role: 'owner', profiles: { name: 'Owner User', avatar_url: 'A' } }],
-        error: null,
-      }),
-    };
-    (supabase.from as jest.Mock).mockReturnValue(mockFrom);
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'workspace_members') {
+        return {
+          select: jest.fn().mockReturnThis(),
+          eq: jest.fn().mockResolvedValueOnce({
+            data: [{ user_id: mockUserId, role: 'owner' }],
+            error: null,
+          }),
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select: jest.fn().mockReturnThis(),
+          in: jest.fn().mockResolvedValueOnce({
+            data: [{ id: mockUserId, name: 'Owner User', avatar_url: 'A' }],
+            error: null,
+          }),
+        };
+      }
+      return { select: jest.fn().mockReturnThis(), eq: jest.fn().mockResolvedValue({ data: [], error: null }) };
+    });
 
     const ws = await supabaseRepo.createWorkspace(mockUserId, 'Alpha Team', 'team', 'EVR-TEST01');
     expect(supabase.rpc).toHaveBeenCalledWith('create_workspace_secure', {
@@ -70,17 +91,33 @@ describe('Workspace Lifecycle & Invite System', () => {
       error: null,
     });
 
-    const mockFrom = {
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockResolvedValueOnce({
-        data: [
-          { user_id: '33333333-3333-4333-a333-333333333333', role: 'owner', profiles: { name: 'Partner 1' } },
-          { user_id: mockUserId, role: 'member', profiles: { name: 'Partner 2' } },
-        ],
-        error: null,
-      }),
-    };
-    (supabase.from as jest.Mock).mockReturnValue(mockFrom);
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'workspace_members') {
+        return {
+          select: jest.fn().mockReturnThis(),
+          eq: jest.fn().mockResolvedValueOnce({
+            data: [
+              { user_id: '33333333-3333-4333-a333-333333333333', role: 'owner' },
+              { user_id: mockUserId, role: 'member' },
+            ],
+            error: null,
+          }),
+        };
+      }
+      if (table === 'profiles') {
+        return {
+          select: jest.fn().mockReturnThis(),
+          in: jest.fn().mockResolvedValueOnce({
+            data: [
+              { id: '33333333-3333-4333-a333-333333333333', name: 'Partner 1', avatar_url: 'P' },
+              { id: mockUserId, name: 'Partner 2', avatar_url: 'P2' },
+            ],
+            error: null,
+          }),
+        };
+      }
+      return { select: jest.fn().mockReturnThis(), eq: jest.fn().mockResolvedValue({ data: [], error: null }) };
+    });
 
     const res = await supabaseRepo.joinWorkspaceByInviteCode('  evr-duo123  ');
     expect(supabase.rpc).toHaveBeenCalledWith('join_workspace_by_invite', {
@@ -154,4 +191,111 @@ describe('Workspace Lifecycle & Invite System', () => {
       expect(res.error).toBe('Username is already taken.');
     });
   });
+
+  describe('Activities Table & Error Resilience', () => {
+    it('fetchActivities returns empty array instead of throwing when activities table fails', async () => {
+      const mockFrom = {
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockResolvedValueOnce({
+          data: null,
+          error: { message: 'relation "public.activities" does not exist' },
+        }),
+      };
+      (supabase.from as jest.Mock).mockReturnValue(mockFrom);
+
+      const activities = await supabaseRepo.fetchActivities(mockWsId);
+      expect(Array.isArray(activities)).toBe(true);
+      expect(activities.length).toBe(0);
+    });
+
+    it('insertActivity never throws even if table does not exist or network fails', async () => {
+      const mockFrom = {
+        insert: jest.fn().mockRejectedValueOnce(new Error('relation "public.activities" does not exist')),
+      };
+      (supabase.from as jest.Mock).mockReturnValue(mockFrom);
+
+      await expect(
+        supabaseRepo.insertActivity({
+          id: '33333333-3333-4333-a333-333333333333',
+          userId: mockUserId,
+          workspaceId: mockWsId,
+          type: 'joined',
+          title: 'joined workspace',
+          visibility: 'shared',
+          timestamp: new Date().toISOString(),
+        })
+      ).resolves.not.toThrow();
+    });
+  });
+
+  describe('Workspace Members Resolution & Robustness', () => {
+    it('loadWorkspaceMembers correctly resolves members even if profiles query fails', async () => {
+      (supabase.from as jest.Mock).mockImplementation((table: string) => {
+        if (table === 'workspace_members') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockResolvedValueOnce({
+              data: [
+                { user_id: mockUserId, role: 'owner' },
+                { user_id: '44444444-4444-4444-a444-444444444444', role: 'member' },
+              ],
+              error: null,
+            }),
+          };
+        }
+        if (table === 'profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            in: jest.fn().mockResolvedValueOnce({
+              data: [], // profiles empty / not yet created
+              error: null,
+            }),
+          };
+        }
+        return { select: jest.fn().mockReturnThis(), eq: jest.fn().mockResolvedValue({ data: [], error: null }) };
+      });
+
+      const members = await supabaseRepo.loadWorkspaceMembers(mockWsId);
+      expect(members.length).toBe(2);
+      expect(members[0].name).toBe('Owner');
+      expect(members[1].name).toBe('Member');
+    });
+
+    it('fetchUserWorkspace guarantees at least 1 member for an authenticated workspace user', async () => {
+      (supabase.from as jest.Mock).mockImplementation((table: string) => {
+        if (table === 'workspace_members') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnValueOnce({
+              limit: jest.fn().mockResolvedValueOnce({
+                data: [{
+                  workspace_id: mockWsId,
+                  role: 'member',
+                  workspaces: {
+                    id: mockWsId,
+                    name: 'Test WS',
+                    mode: 'duo',
+                    invite_code: 'EVR-TEST',
+                  },
+                }],
+                error: null,
+              }),
+            }).mockResolvedValueOnce({
+              data: [], // simulate temporary empty members return
+              error: null,
+            }),
+          };
+        }
+        return { select: jest.fn().mockReturnThis(), in: jest.fn().mockResolvedValue({ data: [], error: null }) };
+      });
+
+      const ws = await supabaseRepo.fetchUserWorkspace(mockUserId);
+      expect(ws).not.toBeNull();
+      expect(ws?.members.length).toBe(1);
+      expect(ws?.members[0].id).toBe(mockUserId);
+    });
+  });
 });
+
