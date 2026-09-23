@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ScrollView,
   View,
@@ -10,6 +10,7 @@ import {
   TextInput,
   Alert,
   Image,
+  BackHandler,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Header, Card, Progress } from '@/src/components/ui';
@@ -65,6 +66,17 @@ export default function Profile() {
   const [newTeamName, setNewTeamName] = useState('');
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (activeModal) {
+        setActiveModal(null);
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [activeModal]);
 
   const completed = tasks.filter((t) => t.completed).length;
   const consistency = habits.length
@@ -559,7 +571,20 @@ export default function Profile() {
       <Modal visible={activeModal === 'workspace'} transparent animationType="fade">
         <View style={s.modalOverlay}>
           <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Workspace Management</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => setActiveModal(null)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Workspace</Text>
+              <View style={{ width: 44 }} />
+            </View>
 
             {workspace ? (
               <View>

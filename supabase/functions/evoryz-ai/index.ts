@@ -56,7 +56,6 @@ serve(async (req) => {
     let replyText = "";
 
     if (geminiKey) {
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
       const systemInstruction = "You are EvoRyz AI, an intelligent, disciplined, and supportive growth mentor inside the EvoRyz life evolution app. Assist with habits, focus, task prioritization, daily reflection, and wellness. Keep answers concise, actionable, and inspiring.";
       
       const contents = [
@@ -67,22 +66,81 @@ serve(async (req) => {
         { role: "user", parts: [{ text: prompt }] },
       ];
 
-      const res = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemInstruction }] },
-          contents,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 600 },
-        }),
-      });
+      // Try known available models with automatic fallback
+      const candidateModels = [
+        "gemini-3.6-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-pro",
+      ];
+      let geminiSuccess = false;
+      let lastErrText = "";
 
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Gemini API error: ${res.status} ${errText}`);
+      for (const modelName of candidateModels) {
+        try {
+          const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+          const res = await fetch(geminiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: systemInstruction }] },
+              contents,
+              generationConfig: { temperature: 0.7, maxOutputTokens: 600 },
+            }),
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            replyText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "No response generated.";
+            geminiSuccess = true;
+            break;
+          } else {
+            lastErrText = await res.text();
+            console.warn(`[evoryz-ai] Model ${modelName} returned ${res.status}:`, lastErrText);
+          }
+        } catch (modelErr) {
+          lastErrText = String(modelErr);
+        }
       }
-      const data = await res.json();
-      replyText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "No response generated.";
+
+      if (!geminiSuccess) {
+        // Query ListModels to find any available generateContent model
+        try {
+          const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`);
+          if (listRes.ok) {
+            const listData = await listRes.json();
+            const supported = listData.models?.find((m: any) =>
+              Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")
+            );
+            if (supported?.name) {
+              const dynUrl = `https://generativelanguage.googleapis.com/v1beta/${supported.name}:generateContent?key=${geminiKey}`;
+              const dynRes = await fetch(dynUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents,
+                  generationConfig: { temperature: 0.7, maxOutputTokens: 600 },
+                }),
+              });
+              if (dynRes.ok) {
+                const dynData = await dynRes.json();
+                replyText = dynData.candidates?.[0]?.content?.parts?.[0]?.text ?? "No response generated.";
+                geminiSuccess = true;
+              } else {
+                lastErrText = await dynRes.text();
+              }
+            }
+          }
+        } catch (listErr) {
+          console.warn("[evoryz-ai] ListModels fallback error:", listErr);
+        }
+      }
+
+      if (!geminiSuccess) {
+        throw new Error(`Gemini API error: ${lastErrText}`);
+      }
     } else if (groqKey) {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",

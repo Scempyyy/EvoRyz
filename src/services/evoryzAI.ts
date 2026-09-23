@@ -22,16 +22,39 @@ export const EvoRyzAIService = {
     conversationHistory: ChatMessageContext[] = []
   ): Promise<EvoRyzAIResult> {
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
+      } else {
+        return {
+          text: 'Please sign in to chat with your AI mentor.',
+          error: 'Unauthenticated session',
+        };
+      }
+
       const { data, error } = await supabase.functions.invoke('evoryz-ai', {
         body: { prompt, conversationHistory },
+        headers,
       });
 
       if (error) {
-        // Honest reporting when Edge Function is not yet deployed or error occurs
         console.warn('[EvoRyzAIService] Edge function error:', error.message);
+        let errorMsg = error.message;
+        if (error && typeof error === 'object' && 'context' in error) {
+          try {
+            const errContext = (error as any).context;
+            if (errContext && typeof errContext.json === 'function') {
+              const body = await errContext.json();
+              if (body?.error) {
+                errorMsg = body.error;
+              }
+            }
+          } catch {}
+        }
         return {
-          text: "EvoRyz AI backend is currently unconfigured. To enable real AI mentor chat, deploy the Supabase Edge Function 'evoryz-ai' with your provider API key.",
-          error: error.message,
+          text: `EvoRyz AI is currently unavailable: ${errorMsg}`,
+          error: errorMsg,
         };
       }
 
@@ -43,7 +66,7 @@ export const EvoRyzAIService = {
       }
 
       return {
-        text: data?.text || 'No response received from EvoRyz AI.',
+        text: data?.text || data?.reply || 'No response received from EvoRyz AI.',
         structured: data?.structured,
       };
     } catch (err: unknown) {

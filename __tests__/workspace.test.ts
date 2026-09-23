@@ -12,6 +12,8 @@ jest.mock('../utils/supabase', () => ({
     },
     realtime: {
       setAuth: jest.fn().mockResolvedValue(undefined),
+      isConnected: jest.fn().mockReturnValue(true),
+      connect: jest.fn(),
     },
   },
 }));
@@ -407,7 +409,82 @@ describe('Workspace Lifecycle & Invite System', () => {
       expect(statusHistory).toContain('CHANNEL_ERROR');
       unsub();
     });
+
+    it('subscribeToMessages connects socket if isConnected() returns false', async () => {
+      (supabase.realtime.isConnected as jest.Mock).mockReturnValueOnce(false);
+      (supabase.auth.getSession as jest.Mock).mockResolvedValueOnce({
+        data: { session: null },
+        error: null,
+      });
+
+      const channelMock = {
+        on: jest.fn().mockReturnThis(),
+        subscribe: jest.fn().mockImplementation((cb) => {
+          cb('SUBSCRIBED');
+        }),
+      };
+      (supabase.channel as jest.Mock).mockReturnValue(channelMock);
+
+      const unsub = supabaseRepo.subscribeToMessages('workspace', jest.fn(), mockWsId);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(supabase.realtime.connect).toHaveBeenCalled();
+      unsub();
+    });
+  });
+
+  describe('AI Mentor Persistence & Membership RPC', () => {
+    it('loadWorkspaceMembers uses get_workspace_members RPC when available', async () => {
+      (supabase.rpc as jest.Mock).mockImplementationOnce((fn: string) => {
+        if (fn === 'get_workspace_members') {
+          return Promise.resolve({
+            data: [
+              { id: mockUserId, name: 'Alice', avatar: 'A', role: 'owner' },
+              { id: '33333333-3333-4333-a333-333333333333', name: 'Bob', avatar: 'B', role: 'member' },
+            ],
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      });
+
+      const members = await supabaseRepo.loadWorkspaceMembers(mockWsId);
+      expect(members.length).toBe(2);
+      expect(members[0].name).toBe('Alice');
+      expect(members[1].name).toBe('Bob');
+    });
+
+    it('insertAiMessage persists prompt and model reply without error', async () => {
+      (supabase.from as jest.Mock).mockReturnValue({
+        insert: jest.fn().mockResolvedValue({ error: null }),
+      });
+
+      const success = await supabaseRepo.insertAiMessage(mockUserId, 'user', 'My goals');
+      expect(success).toBe(true);
+    });
+
+    it('fetchAiMessages returns user and model conversation history', async () => {
+      (supabase.from as jest.Mock).mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockResolvedValue({
+          data: [
+            { type: 'user', content: 'What is deep work?' },
+            { type: 'model', content: 'Deep work is focused undistracted effort.' },
+          ],
+          error: null,
+        }),
+      });
+
+      const msgs = await supabaseRepo.fetchAiMessages(mockUserId);
+      expect(msgs.length).toBe(2);
+      expect(msgs[0].role).toBe('user');
+      expect(msgs[0].content).toBe('What is deep work?');
+      expect(msgs[1].role).toBe('model');
+    });
   });
 });
+
 
 

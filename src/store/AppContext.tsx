@@ -26,6 +26,7 @@ import { feedback } from '@/src/services/feedback';
 import { sfx } from '@/src/services/sfx';
 import { authService } from '@/src/services/auth';
 import { supabaseRepo } from '@/src/services/supabaseRepository';
+import { supabase } from '@/utils/supabase';
 import { generateUUID, ensureUUID, isUUID } from '@/src/utils/uuid';
 
 export type ChatConnectionStatus = 'CONNECTING' | 'CONNECTED' | 'ERROR' | 'DISCONNECTED';
@@ -482,7 +483,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [state.workspace?.id, session?.access_token, session?.user?.id, chatRetryTrigger]);
 
-  // 5. Lock journal when app transitions to inactive or background
+  // 5. Reconnect Realtime and refresh state when app returns to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        try {
+          if (!supabase.realtime.isConnected()) {
+            supabase.realtime.connect();
+          }
+        } catch {}
+        setChatRetryTrigger((prev) => prev + 1);
+      }
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
+  // 6. Lock journal when app transitions to inactive or background
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (nextAppState.match(/inactive|background/)) {
@@ -919,11 +938,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           feedback.sound('send', previous.user.settings.preferences.sfx);
 
           const msgId = ensureUUID(newId());
+          const currentSenderId = (session?.user?.id && isUUID(session.user.id)) ? session.user.id : previous.user.id;
           const message: Message = {
             id: msgId,
             workspaceId: previous.workspace?.id,
             conversationId: conversation,
-            senderId: previous.user.id,
+            senderId: currentSenderId,
             senderName: previous.user.name,
             type,
             content,
@@ -1169,6 +1189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
 
       retryChatConnection: () => {
+        setChatConnectionStatus('CONNECTING');
         setChatRetryTrigger((prev) => prev + 1);
       },
 

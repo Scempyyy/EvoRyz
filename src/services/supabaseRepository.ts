@@ -476,6 +476,8 @@ export class SupabaseRepository {
     const msgId = ensureUUID(message.id);
     const workspaceId = message.workspaceId && isUUID(message.workspaceId) ? message.workspaceId : null;
     const msgType = message.type || 'text';
+    const validDbTypes = ['text', 'image', 'video', 'file', 'voice'];
+    const dbMessageType = validDbTypes.includes(msgType) ? msgType : 'text';
     try {
       const payload: Record<string, unknown> = {
         id: msgId,
@@ -483,7 +485,7 @@ export class SupabaseRepository {
         sender_id: message.senderId,
         conversation_id: message.conversationId || 'workspace',
         type: msgType,
-        message_type: msgType,
+        message_type: dbMessageType,
         content: message.content,
         body: message.content,
         status: message.status || 'sent',
@@ -512,39 +514,121 @@ export class SupabaseRepository {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // AI MENTOR PERSISTENCE
+  // --------------------------------------------------------------------------
+  async fetchAiMessages(userId: string): Promise<{ role: 'user' | 'model'; content: string }[]> {
+    if (!isUUID(userId)) return [];
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id, type, content, body, created_at')
+        .eq('conversation_id', 'ai')
+        .eq('sender_id', userId)
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      if (error || !data) return [];
+      return data.map((r) => ({
+        role: r.type === 'user' ? 'user' : 'model',
+        content: r.content || r.body || '',
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async insertAiMessage(
+    userId: string,
+    role: 'user' | 'model',
+    content: string
+  ): Promise<boolean> {
+    if (!isUUID(userId)) return false;
+    try {
+      const { error } = await supabase.from('messages').insert({
+        id: generateUUID(),
+        sender_id: userId,
+        workspace_id: null,
+        conversation_id: 'ai',
+        type: role,
+        message_type: 'text',
+        content,
+        body: content,
+        status: 'sent',
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] insertAiMessage error:', error.message);
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   subscribeToMessages(
     conversationId: string,
     onNewMessage: (msg: Message) => void,
     workspaceId?: string,
-    onStatusChange?: (status: 'SUBSCRIBED' | 'CONNECTING' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED', error?: Error) => void
+    onStatusChange?: (
+      status: 'SUBSCRIBED' | 'CONNECTING' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED',
+      error?: Error
+    ) => void
   ): () => void {
     let isCancelled = false;
+    let subscribeTimer: ReturnType<typeof setTimeout> | null = null;
+    let isTerminal = false;
 
     if (this.messageChannel) {
       const oldChannel = this.messageChannel;
       this.messageChannel = null;
-      void supabase.removeChannel(oldChannel).catch(() => {});
+      void supabase.removeChannel(oldChannel).catch((err) => {
+        console.warn('[SupabaseRepository] Error removing old channel:', err);
+      });
     }
 
     const validWsId = workspaceId && isUUID(workspaceId) ? workspaceId : null;
-    const channelTopic = validWsId ? `chat-ws-${validWsId}-${Date.now()}` : `chat-${conversationId}-${Date.now()}`;
-    const filter = validWsId ? `workspace_id=eq.${validWsId}` : `conversation_id=eq.${conversationId}`;
+    const channelTopic = validWsId
+      ? `chat-ws-${validWsId}-${Date.now()}`
+      : `chat-${conversationId}-${Date.now()}`;
+    const filter = validWsId
+      ? `workspace_id=eq.${validWsId}`
+      : `conversation_id=eq.${conversationId}`;
 
     const setup = async () => {
-      if (onStatusChange) onStatusChange('CONNECTING');
+      onStatusChange?.('CONNECTING');
+
+      try {
+        if (!supabase.realtime.isConnected()) {
+          console.log('[SupabaseRepository] Realtime socket not connected. Connecting now...');
+          supabase.realtime.connect();
+        }
+      } catch (connErr) {
+        console.warn('[SupabaseRepository] Realtime connect warning:', connErr);
+      }
+
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.access_token) {
           await supabase.realtime.setAuth(session.access_token);
         }
       } catch (authErr) {
-        console.warn('[SupabaseRepository] realtime setAuth error:', authErr);
+        console.warn('[SupabaseRepository] Realtime setAuth error:', authErr);
       }
 
       if (isCancelled) return;
 
       const channel = supabase.channel(channelTopic);
       this.messageChannel = channel;
+
+      subscribeTimer = setTimeout(() => {
+        if (!isTerminal && !isCancelled) {
+          isTerminal = true;
+          const timeoutErr = new Error(`Realtime subscription to ${channelTopic} timed out after 8s`);
+          console.error('[SupabaseRepository]', timeoutErr.message);
+          onStatusChange?.('TIMED_OUT', timeoutErr);
+        }
+      }, 8000);
 
       channel
         .on(
@@ -586,9 +670,31 @@ export class SupabaseRepository {
         )
         .subscribe((status, err) => {
           if (isCancelled) return;
-          if (onStatusChange) {
-            onStatusChange(status as any, err ? new Error(String(err)) : undefined);
+
+          console.log(`[SupabaseRepository] Subscription callback for ${channelTopic}: status=${status}`, err ?? '');
+
+          if (status === 'SUBSCRIBED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            isTerminal = true;
+            if (subscribeTimer) {
+              clearTimeout(subscribeTimer);
+              subscribeTimer = null;
+            }
           }
+
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            const errObj = err instanceof Error ? err : new Error(String(err || status));
+            console.error(`[SupabaseRepository] Realtime terminal error on ${channelTopic}:`, {
+              status,
+              name: errObj.name,
+              message: errObj.message,
+              cause: (errObj as any).cause,
+              stack: errObj.stack,
+            });
+            onStatusChange?.(status as any, errObj);
+            return;
+          }
+
+          onStatusChange?.(status as any, err ? new Error(String(err)) : undefined);
         });
     };
 
@@ -596,6 +702,10 @@ export class SupabaseRepository {
 
     return () => {
       isCancelled = true;
+      if (subscribeTimer) {
+        clearTimeout(subscribeTimer);
+        subscribeTimer = null;
+      }
       if (this.messageChannel) {
         const ch = this.messageChannel;
         this.messageChannel = null;
@@ -724,15 +834,32 @@ export class SupabaseRepository {
   async loadWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
     if (!isUUID(workspaceId)) return [];
     try {
-      // 1. Fetch workspace_members directly
+      // 1. Try secure RPC function first (guarantees complete member resolution for enrolled members)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('get_workspace_members', {
+        workspace_id_input: workspaceId,
+      });
+
+      if (!rpcErr && Array.isArray(rpcData) && rpcData.length > 0) {
+        return rpcData.map((m: any) => ({
+          id: m.id,
+          name: m.name || (m.role === 'owner' ? 'Owner' : 'Member'),
+          avatar: m.avatar || (m.name ? m.name.charAt(0).toUpperCase() : 'M'),
+        }));
+      }
+
+      // 2. Fallback to direct workspace_members table query
       const { data: memRows, error: memErr } = await supabase
         .from('workspace_members')
         .select('user_id, role')
         .eq('workspace_id', workspaceId);
 
-      if (memErr || !memRows || !memRows.length) return [];
+      if (memErr) {
+        console.warn('[SupabaseRepository] loadWorkspaceMembers query warning:', memErr.message);
+        return [];
+      }
+      if (!memRows || !memRows.length) return [];
 
-      // 2. Fetch profiles for all member user_ids
+      // 3. Fetch profiles for all member user_ids
       const userIds = memRows.map((r) => r.user_id).filter(isUUID);
       const profileMap = new Map<string, { name?: string | null; avatar_url?: string | null }>();
 
@@ -746,9 +873,7 @@ export class SupabaseRepository {
           (profiles || []).forEach((p) => {
             if (p?.id) profileMap.set(p.id, p);
           });
-        } catch {
-          // Graceful fallback to default initials
-        }
+        } catch {}
       }
 
       return memRows.map((row) => {
@@ -760,7 +885,8 @@ export class SupabaseRepository {
           avatar: prof?.avatar_url || name.charAt(0).toUpperCase() || 'M',
         };
       });
-    } catch {
+    } catch (err) {
+      console.warn('[SupabaseRepository] loadWorkspaceMembers exception:', err);
       return [];
     }
   }

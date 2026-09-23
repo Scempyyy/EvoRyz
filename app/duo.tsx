@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { router } from 'expo-router';
-import { View, Text, TextInput, Pressable, StyleSheet, Share } from 'react-native';
+import { View, Text, TextInput, Pressable, StyleSheet, Share, BackHandler } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '@/src/store/AppContext';
@@ -12,6 +12,22 @@ export default function Duo() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { createWorkspace, joinWorkspace, leaveWorkspace, workspace } = useApp();
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/daily');
+    }
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
 
   const isCurrentDuo = workspace?.mode === 'duo';
 
@@ -57,7 +73,13 @@ export default function Duo() {
     <SafeAreaView style={s.root}>
       <View>
         <View style={s.topNav}>
-          <Pressable hitSlop={10} onPress={() => router.back()} style={s.backBtn}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+            hitSlop={10}
+            onPress={handleBack}
+            style={s.backBtn}
+          >
             <Ionicons name="chevron-back" size={24} color="white" />
             <Text style={s.backText}>Back</Text>
           </Pressable>

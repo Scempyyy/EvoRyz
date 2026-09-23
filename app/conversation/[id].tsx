@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, router } from 'expo-router';
 import {
   Animated,
+  BackHandler,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -36,6 +37,9 @@ import { colors } from '@/src/theme';
 import type { Message } from '@/src/types';
 import { EvoRyzAIService, ChatMessageContext } from '@/src/services/evoryzAI';
 import { evoryzDay, displayEvoDay } from '@/src/services/evoryzDay';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabaseRepo } from '@/src/services/supabaseRepository';
+import { isUUID } from '@/src/utils/uuid';
 
 const emojis = ['✨', '🔥', '👏', '💪', '🎉', '❤️'];
 const formatTime = (seconds = 0) =>
@@ -775,6 +779,22 @@ function WorkspaceChatComponent() {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
 
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/chat');
+    }
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     if (workspace?.id) {
       void refreshWorkspaceMessages();
@@ -871,12 +891,19 @@ function WorkspaceChatComponent() {
       style={s.root}
     >
       <View style={s.header}>
-        <Pressable hitSlop={10} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={27} color="white" />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+          hitSlop={12}
+          onPress={handleBack}
+          style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 8 }}
+        >
+          <Ionicons name="chevron-back" size={26} color="white" />
+          <Text style={{ color: 'white', fontWeight: '700', fontSize: 16 }}>Back</Text>
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>{title}</Text>
-          {workspace && workspace.members.length > 0 ? (
+          {workspace ? (
             <Pressable
               hitSlop={8}
               disabled={chatConnectionStatus === 'CONNECTED' || chatConnectionStatus === 'CONNECTING'}
@@ -886,7 +913,7 @@ function WorkspaceChatComponent() {
               }}
             >
               <Text style={s.sub}>
-                {workspace.members.length} member{workspace.members.length === 1 ? '' : 's'} ·{' '}
+                {workspace.members.length > 0 ? `${workspace.members.length} member${workspace.members.length === 1 ? '' : 's'} · ` : ''}
                 {chatConnectionStatus === 'CONNECTED'
                   ? 'Live Supabase Realtime'
                   : chatConnectionStatus === 'CONNECTING'
@@ -898,7 +925,7 @@ function WorkspaceChatComponent() {
             </Pressable>
           ) : (
             <Text style={s.sub}>
-              {workspace ? 'Connecting Realtime…' : 'Connect Duo or Team to sync shared chat'}
+              Connect Duo or Team to sync shared chat
             </Text>
           )}
         </View>
@@ -1012,34 +1039,101 @@ function WorkspaceChatComponent() {
 // 3. REAL EVO RYZ AI MENTOR COMPONENT
 // ==============================================================================
 function AiMentorComponent() {
+  const { user } = useApp();
+  const defaultInitialMessage: { role: 'user' | 'model'; content: string } = {
+    role: 'model',
+    content: "Hello! I am your EvoRyz AI Growth Mentor. How can I assist you with your focus, tasks, or habits today?",
+  };
   const [aiHistory, setAiHistory] = useState<{ role: 'user' | 'model'; content: string }[]>([
-    {
-      role: 'model',
-      content: "Hello! I am your EvoRyz AI Growth Mentor. How can I assist you with your focus, tasks, or habits today?",
-    },
+    defaultInitialMessage,
   ]);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/chat');
+    }
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Load persisted AI conversation isolated by user.id
+  useEffect(() => {
+    let isCancelled = false;
+    const cacheKey = `evoryz.ai-history.${user.id}`;
+
+    // 1. Instant local cache load
+    AsyncStorage.getItem(cacheKey).then((cached) => {
+      if (!isCancelled && cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setAiHistory(parsed);
+          }
+        } catch {}
+      }
+    });
+
+    // 2. Fetch from cloud database (isolated by sender_id = user.id)
+    if (user?.id && isUUID(user.id)) {
+      supabaseRepo.fetchAiMessages(user.id).then((cloudMsgs) => {
+        if (!isCancelled && cloudMsgs && cloudMsgs.length > 0) {
+          setAiHistory(cloudMsgs);
+          void AsyncStorage.setItem(cacheKey, JSON.stringify(cloudMsgs));
+        }
+      });
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user.id]);
+
   const askAi = async () => {
     if (!prompt.trim() || loading) return;
     const userPrompt = prompt.trim();
     setPrompt('');
-    setAiHistory((prev) => [...prev, { role: 'user', content: userPrompt }]);
+
+    const newHistory = [...aiHistory, { role: 'user' as const, content: userPrompt }];
+    setAiHistory(newHistory);
     setLoading(true);
 
+    const cacheKey = `evoryz.ai-history.${user.id}`;
+    void AsyncStorage.setItem(cacheKey, JSON.stringify(newHistory));
+
+    // Persist user prompt to Supabase
+    if (user?.id && isUUID(user.id)) {
+      void supabaseRepo.insertAiMessage(user.id, 'user', userPrompt);
+    }
+
     try {
-      const historyPayload: ChatMessageContext[] = aiHistory.map((m) => ({
+      const historyPayload: ChatMessageContext[] = newHistory.map((m) => ({
         role: m.role,
         content: m.content,
       }));
 
       const result = await EvoRyzAIService.ask(userPrompt, historyPayload);
-      setAiHistory((prev) => [
-        ...prev,
-        { role: 'model', content: result.text },
-      ]);
+      const withReply = [
+        ...newHistory,
+        { role: 'model' as const, content: result.text },
+      ];
+      setAiHistory(withReply);
+      void AsyncStorage.setItem(cacheKey, JSON.stringify(withReply));
+
+      // Persist model response to Supabase
+      if (user?.id && isUUID(user.id)) {
+        void supabaseRepo.insertAiMessage(user.id, 'model', result.text);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'AI mentor request failed';
       setAiHistory((prev) => [
@@ -1058,8 +1152,15 @@ function AiMentorComponent() {
       style={s.root}
     >
       <View style={s.header}>
-        <Pressable hitSlop={10} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={27} color="white" />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+          hitSlop={12}
+          onPress={handleBack}
+          style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 8 }}
+        >
+          <Ionicons name="chevron-back" size={26} color="white" />
+          <Text style={{ color: 'white', fontWeight: '700', fontSize: 16 }}>Back</Text>
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>🤖 EvoRyz AI Mentor</Text>
