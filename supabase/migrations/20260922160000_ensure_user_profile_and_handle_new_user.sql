@@ -88,6 +88,71 @@ do $$ begin
   end if;
 end $$;
 
+-- Messages: reconcile columns, RLS and Realtime
+alter table public.messages add column if not exists content text;
+alter table public.messages add column if not exists conversation_id text default 'workspace';
+alter table public.messages add column if not exists type text default 'text';
+alter table public.messages add column if not exists status text default 'sent';
+alter table public.messages add column if not exists reply_to uuid references public.messages(id) on delete set null;
+alter table public.messages add column if not exists reactions jsonb default '[]'::jsonb;
+alter table public.messages add column if not exists uri text;
+alter table public.messages add column if not exists thumbnail_uri text;
+alter table public.messages add column if not exists attachment_name text;
+alter table public.messages add column if not exists mime_type text;
+alter table public.messages add column if not exists size integer;
+alter table public.messages add column if not exists width integer;
+alter table public.messages add column if not exists height integer;
+alter table public.messages add column if not exists duration numeric;
+alter table public.messages add column if not exists updated_at timestamptz default now();
+
+update public.messages set content = body where content is null and body is not null;
+update public.messages set body = content where body is null and content is not null;
+
+alter table public.messages enable row level security;
+
+do $$ begin
+  if not exists (select 1 from pg_policies where tablename = 'messages' and policyname = 'Message access policy') then
+    create policy "Message access policy" on public.messages for select
+      using (
+        sender_id = auth.uid() or
+        (
+          workspace_id is not null and
+          exists (
+            select 1 from public.workspace_members
+            where workspace_members.workspace_id = messages.workspace_id
+            and workspace_members.user_id = auth.uid()
+          )
+        )
+      );
+  end if;
+  if not exists (select 1 from pg_policies where tablename = 'messages' and policyname = 'Users can insert messages') then
+    create policy "Users can insert messages" on public.messages for insert
+      with check (
+        sender_id = auth.uid() and
+        (
+          workspace_id is null or
+          exists (
+            select 1 from public.workspace_members
+            where workspace_members.workspace_id = messages.workspace_id
+            and workspace_members.user_id = auth.uid()
+          )
+        )
+      );
+  end if;
+end $$;
+
+-- Enable Realtime for messages if not enabled
+do $$ begin
+  if not exists (
+    select 1 from pg_publication_tables 
+    where pubname = 'supabase_realtime' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table public.messages;
+  end if;
+exception when others then
+  null;
+end $$;
+
 -- ------------------------------------------------------------------------------
 -- 3. ENSURE_PROFILE_EXISTS (COMPATIBLE WITH NAME & DISPLAY_NAME)
 -- ------------------------------------------------------------------------------

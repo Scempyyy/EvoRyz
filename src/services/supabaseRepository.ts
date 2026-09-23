@@ -430,29 +430,33 @@ export class SupabaseRepository {
       let query = supabase
         .from('messages')
         .select('*')
-        .eq('conversation_id', conversationId)
         .order('created_at', { ascending: true })
         .limit(100);
 
       if (workspaceId && isUUID(workspaceId)) {
         query = query.eq('workspace_id', workspaceId);
+      } else {
+        query = query.eq('conversation_id', conversationId);
       }
 
       const { data, error } = await query;
-      if (error || !data) return [];
+      if (error || !data) {
+        if (error) console.warn('[SupabaseRepository] fetchMessages error:', error.message);
+        return [];
+      }
 
       return data.map((row) => ({
         id: row.id,
         workspaceId: row.workspace_id ?? undefined,
-        conversationId: row.conversation_id,
+        conversationId: row.conversation_id || conversationId,
         senderId: row.sender_id,
-        type: row.type,
-        content: row.content,
+        type: row.type || 'text',
+        content: row.content || row.body || '',
         timestamp: row.created_at,
         status: row.status ?? 'sent',
         replyTo: row.reply_to ?? undefined,
         reactions: Array.isArray(row.reactions) ? row.reactions : [],
-        uri: row.uri ?? undefined,
+        uri: row.uri || row.media_url || undefined,
         thumbnailUri: row.thumbnail_uri ?? undefined,
         attachmentName: row.attachment_name ?? undefined,
         mimeType: row.mime_type ?? undefined,
@@ -461,23 +465,27 @@ export class SupabaseRepository {
         height: row.height ?? undefined,
         duration: row.duration ?? undefined,
       }));
-    } catch {
+    } catch (err) {
+      console.warn('[SupabaseRepository] fetchMessages exception:', err);
       return [];
     }
   }
 
-  async insertMessage(message: Message): Promise<void> {
-    if (!isUUID(message.senderId)) return;
+  async insertMessage(message: Message): Promise<{ success: boolean; error?: string }> {
+    if (!isUUID(message.senderId)) return { success: false, error: 'Invalid sender ID' };
     const msgId = ensureUUID(message.id);
     const workspaceId = message.workspaceId && isUUID(message.workspaceId) ? message.workspaceId : null;
+    const msgType = message.type || 'text';
     try {
-      await supabase.from('messages').insert({
+      const payload: Record<string, unknown> = {
         id: msgId,
         workspace_id: workspaceId,
         sender_id: message.senderId,
-        conversation_id: message.conversationId,
-        type: message.type,
+        conversation_id: message.conversationId || 'workspace',
+        type: msgType,
+        message_type: msgType,
         content: message.content,
+        body: message.content,
         status: message.status || 'sent',
         reply_to: message.replyTo && isUUID(message.replyTo) ? message.replyTo : null,
         reactions: message.reactions || [],
@@ -489,65 +497,109 @@ export class SupabaseRepository {
         width: message.width || null,
         height: message.height || null,
         duration: message.duration || null,
-      });
-    } catch (err) {
-      console.warn('[SupabaseRepository] insertMessage error:', err);
+      };
+
+      const { error } = await supabase.from('messages').insert(payload);
+      if (error) {
+        console.warn('[SupabaseRepository] insertMessage error:', error.message);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'insertMessage failed';
+      console.warn('[SupabaseRepository] insertMessage exception:', msg);
+      return { success: false, error: msg };
     }
   }
 
   subscribeToMessages(
     conversationId: string,
     onNewMessage: (msg: Message) => void,
-    workspaceId?: string
+    workspaceId?: string,
+    onStatusChange?: (status: 'SUBSCRIBED' | 'CONNECTING' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED', error?: Error) => void
   ): () => void {
+    let isCancelled = false;
+
     if (this.messageChannel) {
-      supabase.removeChannel(this.messageChannel);
+      const oldChannel = this.messageChannel;
+      this.messageChannel = null;
+      void supabase.removeChannel(oldChannel).catch(() => {});
     }
 
-    const channelName = workspaceId ? `chat-${conversationId}-${workspaceId}` : `chat-${conversationId}`;
-    this.messageChannel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `conversation_id=eq.${conversationId}`,
-        },
-        (payload) => {
-          const row = payload.new;
-          if (row) {
-            // Guard against cross-workspace message ingestion
-            if (workspaceId && row.workspace_id && row.workspace_id !== workspaceId) {
-              return;
-            }
-            onNewMessage({
-              id: row.id,
-              workspaceId: row.workspace_id ?? undefined,
-              conversationId: row.conversation_id,
-              senderId: row.sender_id,
-              type: row.type,
-              content: row.content,
-              timestamp: row.created_at,
-              status: row.status ?? 'sent',
-              replyTo: row.reply_to ?? undefined,
-              reactions: Array.isArray(row.reactions) ? row.reactions : [],
-              uri: row.uri ?? undefined,
-              thumbnailUri: row.thumbnail_uri ?? undefined,
-              attachmentName: row.attachment_name ?? undefined,
-              mimeType: row.mime_type ?? undefined,
-              size: row.size ?? undefined,
-            });
-          }
+    const validWsId = workspaceId && isUUID(workspaceId) ? workspaceId : null;
+    const channelTopic = validWsId ? `chat-ws-${validWsId}-${Date.now()}` : `chat-${conversationId}-${Date.now()}`;
+    const filter = validWsId ? `workspace_id=eq.${validWsId}` : `conversation_id=eq.${conversationId}`;
+
+    const setup = async () => {
+      if (onStatusChange) onStatusChange('CONNECTING');
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          await supabase.realtime.setAuth(session.access_token);
         }
-      )
-      .subscribe();
+      } catch (authErr) {
+        console.warn('[SupabaseRepository] realtime setAuth error:', authErr);
+      }
+
+      if (isCancelled) return;
+
+      const channel = supabase.channel(channelTopic);
+      this.messageChannel = channel;
+
+      channel
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+            filter,
+          },
+          (payload) => {
+            const row = payload.new as any;
+            if (row) {
+              if (validWsId && row.workspace_id && row.workspace_id !== validWsId) {
+                return;
+              }
+              onNewMessage({
+                id: row.id,
+                workspaceId: row.workspace_id ?? undefined,
+                conversationId: row.conversation_id || conversationId,
+                senderId: row.sender_id,
+                type: row.type || row.message_type || 'text',
+                content: row.content || row.body || '',
+                timestamp: row.created_at,
+                status: row.status ?? 'sent',
+                replyTo: row.reply_to ?? undefined,
+                reactions: Array.isArray(row.reactions) ? row.reactions : [],
+                uri: row.uri || row.media_url || undefined,
+                thumbnailUri: row.thumbnail_uri ?? undefined,
+                attachmentName: row.attachment_name ?? undefined,
+                mimeType: row.mime_type ?? undefined,
+                size: row.size ?? undefined,
+                width: row.width ?? undefined,
+                height: row.height ?? undefined,
+                duration: row.duration ?? undefined,
+              });
+            }
+          }
+        )
+        .subscribe((status, err) => {
+          if (isCancelled) return;
+          if (onStatusChange) {
+            onStatusChange(status as any, err ? new Error(String(err)) : undefined);
+          }
+        });
+    };
+
+    void setup();
 
     return () => {
+      isCancelled = true;
       if (this.messageChannel) {
-        supabase.removeChannel(this.messageChannel);
+        const ch = this.messageChannel;
         this.messageChannel = null;
+        void supabase.removeChannel(ch).catch(() => {});
       }
     };
   }
@@ -716,28 +768,39 @@ export class SupabaseRepository {
   async fetchUserWorkspace(userId: string): Promise<Workspace | null> {
     if (!isUUID(userId)) return null;
     try {
+      // 1. Query membership directly
       const { data: memberRows, error: memberErr } = await supabase
         .from('workspace_members')
-        .select('workspace_id, role, workspaces(*)')
+        .select('workspace_id, role')
         .eq('user_id', userId)
+        .order('joined_at', { ascending: false })
         .limit(1);
 
       if (memberErr || !memberRows || !memberRows.length) return null;
 
-      const wsData = (memberRows[0] as unknown as { workspaces: { id: string; name: string; mode: 'duo' | 'team'; invite_code: string } }).workspaces;
-      if (!wsData) return null;
+      const wsId = memberRows[0].workspace_id;
+      if (!isUUID(wsId)) return null;
 
-      let members = await this.loadWorkspaceMembers(wsData.id);
-      // Fallback: at minimum, the current user is a confirmed member of this workspace
+      // 2. Query workspace directly
+      const { data: wsRow, error: wsErr } = await supabase
+        .from('workspaces')
+        .select('id, name, mode, invite_code')
+        .eq('id', wsId)
+        .maybeSingle();
+
+      if (wsErr || !wsRow) return null;
+
+      // 3. Load full membership list
+      let members = await this.loadWorkspaceMembers(wsRow.id);
       if (!members || members.length === 0) {
         members = [{ id: userId, name: 'You', avatar: 'Y' }];
       }
 
       return {
-        id: wsData.id,
-        name: wsData.name,
-        mode: wsData.mode,
-        inviteCode: wsData.invite_code,
+        id: wsRow.id,
+        name: wsRow.name,
+        mode: wsRow.mode as 'duo' | 'team',
+        inviteCode: wsRow.invite_code,
         members,
       };
     } catch {

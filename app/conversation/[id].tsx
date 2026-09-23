@@ -758,7 +758,15 @@ function JournalComponent() {
 // 2. REAL WORKSPACE CHAT COMPONENT
 // ==============================================================================
 function WorkspaceChatComponent() {
-  const { messages, sendMessage, workspace, user } = useApp();
+  const {
+    messages,
+    sendMessage,
+    workspace,
+    user,
+    refreshWorkspaceMessages,
+    chatConnectionStatus,
+    retryChatConnection,
+  } = useApp();
   const [text, setText] = useState('');
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [viewer, setViewer] = useState<Message | null>(null);
@@ -766,6 +774,12 @@ function WorkspaceChatComponent() {
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 200);
+
+  useEffect(() => {
+    if (workspace?.id) {
+      void refreshWorkspaceMessages();
+    }
+  }, [workspace?.id, refreshWorkspaceMessages]);
 
   const send = () => {
     if (text.trim()) {
@@ -862,15 +876,54 @@ function WorkspaceChatComponent() {
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={s.title}>{title}</Text>
-          <Text style={s.sub}>
-            {workspace && workspace.members.length > 0
-              ? `${workspace.members.length} members · Live Supabase Realtime`
-              : workspace
-              ? 'Connecting… · Live Supabase Realtime'
-              : 'Connect Duo or Team to sync shared chat'}
-          </Text>
+          {workspace && workspace.members.length > 0 ? (
+            <Pressable
+              hitSlop={8}
+              disabled={chatConnectionStatus === 'CONNECTED' || chatConnectionStatus === 'CONNECTING'}
+              onPress={() => {
+                feedback.tap();
+                retryChatConnection();
+              }}
+            >
+              <Text style={s.sub}>
+                {workspace.members.length} member{workspace.members.length === 1 ? '' : 's'} ·{' '}
+                {chatConnectionStatus === 'CONNECTED'
+                  ? 'Live Supabase Realtime'
+                  : chatConnectionStatus === 'CONNECTING'
+                  ? 'Connecting Realtime…'
+                  : chatConnectionStatus === 'ERROR'
+                  ? 'Connection issue · Tap to retry'
+                  : 'Offline · Tap to reconnect'}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={s.sub}>
+              {workspace ? 'Connecting Realtime…' : 'Connect Duo or Team to sync shared chat'}
+            </Text>
+          )}
         </View>
       </View>
+
+      {workspace?.mode === 'duo' && workspace.members.length === 1 ? (
+        <View style={s.inviteBanner}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.inviteBannerTitle}>Waiting for your partner to join</Text>
+            <Text style={s.inviteBannerSub}>Invite code: {workspace.inviteCode}</Text>
+          </View>
+          <Pressable
+            style={s.inviteBannerBtn}
+            onPress={() => {
+              feedback.tap(true);
+              void Share.share({
+                message: `Join my EvoRyz Duo workspace with invite code: ${workspace.inviteCode}`,
+              });
+            }}
+          >
+            <Ionicons name="share-outline" size={15} color="white" />
+            <Text style={s.inviteBannerBtnText}>Share Code</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <ScrollView
         ref={scroll}
@@ -1403,6 +1456,40 @@ const s = StyleSheet.create({
   dayBannerBtnText: {
     color: 'white',
     fontSize: 11,
+    fontWeight: '700',
+  },
+  inviteBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1E1B4B',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  inviteBannerTitle: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inviteBannerSub: {
+    color: colors.violetLight,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  inviteBannerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.violet,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  inviteBannerBtnText: {
+    color: 'white',
+    fontSize: 12,
     fontWeight: '700',
   },
   historyModalOverlay: {

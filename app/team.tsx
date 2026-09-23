@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { router } from 'expo-router';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { feedback } from '@/src/services/feedback';
@@ -46,6 +47,12 @@ export default function Team() {
   return (
     <SafeAreaView style={s.root}>
       <View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+          <Pressable hitSlop={10} onPress={() => router.back()} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Ionicons name="chevron-back" size={24} color="white" />
+            <Text style={{ color: 'white', fontWeight: '700', fontSize: 16 }}>Back</Text>
+          </Pressable>
+        </View>
         <Text style={s.brand}>EvoRyz</Text>
         <Text style={s.title}>Set up your team</Text>
         <Text style={s.copy}>

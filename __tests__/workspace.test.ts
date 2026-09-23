@@ -5,6 +5,14 @@ jest.mock('../utils/supabase', () => ({
   supabase: {
     rpc: jest.fn(),
     from: jest.fn(),
+    channel: jest.fn(),
+    removeChannel: jest.fn().mockResolvedValue('ok'),
+    auth: {
+      getSession: jest.fn().mockResolvedValue({ data: { session: null }, error: null }),
+    },
+    realtime: {
+      setAuth: jest.fn().mockResolvedValue(undefined),
+    },
   },
 }));
 
@@ -269,22 +277,34 @@ describe('Workspace Lifecycle & Invite System', () => {
           return {
             select: jest.fn().mockReturnThis(),
             eq: jest.fn().mockReturnValueOnce({
-              limit: jest.fn().mockResolvedValueOnce({
-                data: [{
-                  workspace_id: mockWsId,
-                  role: 'member',
-                  workspaces: {
-                    id: mockWsId,
-                    name: 'Test WS',
-                    mode: 'duo',
-                    invite_code: 'EVR-TEST',
-                  },
-                }],
-                error: null,
+              order: jest.fn().mockReturnValue({
+                limit: jest.fn().mockResolvedValueOnce({
+                  data: [{
+                    workspace_id: mockWsId,
+                    role: 'member',
+                  }],
+                  error: null,
+                }),
               }),
             }).mockResolvedValueOnce({
-              data: [], // simulate temporary empty members return
+              data: [], // simulate temporary empty members return from loadWorkspaceMembers
               error: null,
+            }),
+          };
+        }
+        if (table === 'workspaces') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnValue({
+              maybeSingle: jest.fn().mockResolvedValue({
+                data: {
+                  id: mockWsId,
+                  name: 'Test WS',
+                  mode: 'duo',
+                  invite_code: 'EVR-TEST',
+                },
+                error: null,
+              }),
             }),
           };
         }
@@ -297,5 +317,97 @@ describe('Workspace Lifecycle & Invite System', () => {
       expect(ws?.members[0].id).toBe(mockUserId);
     });
   });
+
+  describe('Workspace Chat & Realtime Reliability', () => {
+    it('insertMessage satisfies check constraint with matching message_type and type', async () => {
+      let insertedPayload: any = null;
+      (supabase.from as jest.Mock).mockReturnValue({
+        insert: jest.fn().mockImplementation((payload) => {
+          insertedPayload = payload;
+          return Promise.resolve({ error: null });
+        }),
+      });
+
+      const res = await supabaseRepo.insertMessage({
+        id: '55555555-5555-4555-a555-555555555555',
+        senderId: mockUserId,
+        workspaceId: mockWsId,
+        content: 'Hello Realtime',
+        type: 'text',
+        timestamp: new Date().toISOString(),
+      });
+
+      expect(res.success).toBe(true);
+      expect(insertedPayload.type).toBe('text');
+      expect(insertedPayload.message_type).toBe('text');
+      expect(insertedPayload.content).toBe('Hello Realtime');
+      expect(insertedPayload.body).toBe('Hello Realtime');
+    });
+
+    it('subscribeToMessages invokes setAuth with session token and transitions to SUBSCRIBED', async () => {
+      (supabase.auth.getSession as jest.Mock).mockResolvedValueOnce({
+        data: {
+          session: {
+            access_token: 'mock-jwt-token',
+            user: { id: mockUserId },
+          },
+        },
+        error: null,
+      });
+
+      const channelMock = {
+        on: jest.fn().mockReturnThis(),
+        subscribe: jest.fn().mockImplementation((cb) => {
+          cb('SUBSCRIBED');
+        }),
+      };
+      (supabase.channel as jest.Mock).mockReturnValue(channelMock);
+
+      const statusHistory: string[] = [];
+      const unsub = supabaseRepo.subscribeToMessages(
+        'workspace',
+        jest.fn(),
+        mockWsId,
+        (status) => statusHistory.push(status)
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(supabase.realtime.setAuth).toHaveBeenCalledWith('mock-jwt-token');
+      expect(statusHistory).toContain('CONNECTING');
+      expect(statusHistory).toContain('SUBSCRIBED');
+
+      unsub();
+      expect(supabase.removeChannel).toHaveBeenCalled();
+    });
+
+    it('subscribeToMessages reports CHANNEL_ERROR and TIMED_OUT properly', async () => {
+      (supabase.auth.getSession as jest.Mock).mockResolvedValueOnce({
+        data: { session: null },
+        error: null,
+      });
+
+      const channelMock = {
+        on: jest.fn().mockReturnThis(),
+        subscribe: jest.fn().mockImplementation((cb) => {
+          cb('CHANNEL_ERROR', new Error('Realtime connection rejected'));
+        }),
+      };
+      (supabase.channel as jest.Mock).mockReturnValue(channelMock);
+
+      const statusHistory: string[] = [];
+      const unsub = supabaseRepo.subscribeToMessages(
+        'workspace',
+        jest.fn(),
+        mockWsId,
+        (status) => statusHistory.push(status)
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(statusHistory).toContain('CHANNEL_ERROR');
+      unsub();
+    });
+  });
 });
+
 

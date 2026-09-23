@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
+
 import {
   ActivityEvent,
   DailySummary,
@@ -26,6 +27,8 @@ import { sfx } from '@/src/services/sfx';
 import { authService } from '@/src/services/auth';
 import { supabaseRepo } from '@/src/services/supabaseRepository';
 import { generateUUID, ensureUUID, isUUID } from '@/src/utils/uuid';
+
+export type ChatConnectionStatus = 'CONNECTING' | 'CONNECTED' | 'ERROR' | 'DISCONNECTED';
 
 const storageKey = 'evoryz.local-state.v3';
 const stamp = () => new Date().toISOString();
@@ -175,6 +178,10 @@ type Ctx = State & {
   resetJournalPin: (newPin: string) => Promise<void>;
   addJournalEntry: (content: string) => Promise<void>;
   deleteJournalEntry: (id: string) => Promise<void>;
+  refreshWorkspaceMessages: () => Promise<void>;
+  isChatConnected: boolean;
+  chatConnectionStatus: ChatConnectionStatus;
+  retryChatConnection: () => void;
 };
 
 const Context = createContext<Ctx | null>(null);
@@ -211,6 +218,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [decryptedEntries, setDecryptedEntries] = useState<
     { id: string; plaintext: string; timestamp: string; date: string }[]
   >([]);
+  const [chatConnectionStatus, setChatConnectionStatus] = useState<ChatConnectionStatus>('DISCONNECTED');
+  const [chatRetryTrigger, setChatRetryTrigger] = useState(0);
 
   // 1. Hydrate local cached state and sound effects on launch
   useEffect(() => {
@@ -350,24 +359,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         let resolvedWorkspace = prev.workspace;
         let resolvedMode = prev.mode;
 
-        if (dbWorkspace !== undefined) {
-          if (dbWorkspace === null) {
-            // Cloud confirmed user has no workspace membership (Solo mode)
+        if (dbWorkspace) {
+          // Cloud confirmed active workspace -> Source of Truth
+          resolvedMode = dbWorkspace.mode;
+          if (dbWorkspace.members.length > 0) {
+            resolvedWorkspace = dbWorkspace;
+          } else if (prev.workspace?.id === dbWorkspace.id && prev.workspace.members.length > 0) {
+            resolvedWorkspace = { ...dbWorkspace, members: prev.workspace.members };
+          } else {
+            resolvedWorkspace = {
+              ...dbWorkspace,
+              members: [{ id: uid, name: fullName || 'You', avatar: avatar || 'Y' }],
+            };
+          }
+        } else if (dbWorkspace === null) {
+          // Only switch to Solo if user genuinely does not belong to any workspace
+          // AND we don't have an active workspace already loaded from storage
+          if (!prev.workspace || !prev.workspace.id) {
             resolvedWorkspace = undefined;
             resolvedMode = 'solo';
-          } else {
-            // Cloud returned workspace
-            resolvedMode = dbWorkspace.mode;
-            if (dbWorkspace.members.length > 0) {
-              resolvedWorkspace = dbWorkspace;
-            } else if (prev.workspace?.id === dbWorkspace.id && prev.workspace.members.length > 0) {
-              resolvedWorkspace = { ...dbWorkspace, members: prev.workspace.members };
-            } else {
-              resolvedWorkspace = {
-                ...dbWorkspace,
-                members: [{ id: uid, name: fullName || 'You', avatar: avatar || 'Y' }],
-              };
-            }
           }
         }
 
@@ -415,12 +425,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // 4. Subscribe to Realtime messages when workspace is active
+  // 4. Subscribe to Realtime messages when workspace and authenticated session are active
   useEffect(() => {
     const wsId = state.workspace?.id;
-    if (!wsId) return;
+    const token = session?.access_token;
+    const uid = session?.user?.id;
+
+    if (!wsId || !isUUID(wsId) || !token || !uid || !isUUID(uid)) {
+      return;
+    }
 
     let active = true;
+
     supabaseRepo
       .fetchMessages('workspace', wsId)
       .then((fetched) => {
@@ -444,14 +460,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           };
         });
       },
-      wsId
+      wsId,
+      (status, err) => {
+        if (!active) return;
+        if (status === 'SUBSCRIBED') {
+          setChatConnectionStatus('CONNECTED');
+        } else if (status === 'CONNECTING') {
+          setChatConnectionStatus('CONNECTING');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('[AppContext] Realtime subscription status error:', status, err?.message);
+          setChatConnectionStatus('ERROR');
+        } else if (status === 'CLOSED') {
+          setChatConnectionStatus('DISCONNECTED');
+        }
+      }
     );
 
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [state.workspace?.id]);
+  }, [state.workspace?.id, session?.access_token, session?.user?.id, chatRetryTrigger]);
 
   // 5. Lock journal when app transitions to inactive or background
   useEffect(() => {
@@ -889,8 +918,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           feedback.tap(previous.user.settings.preferences.haptics);
           feedback.sound('send', previous.user.settings.preferences.sfx);
 
+          const msgId = ensureUUID(newId());
           const message: Message = {
-            id: newId(),
+            id: msgId,
             workspaceId: previous.workspace?.id,
             conversationId: conversation,
             senderId: previous.user.id,
@@ -902,8 +932,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...attachment,
           };
 
-          if (conversation === 'workspace') {
-            void supabaseRepo.insertMessage(message);
+          if (conversation === 'workspace' && previous.workspace?.id) {
+            void supabaseRepo.insertMessage(message).then((res) => {
+              if (!res.success) {
+                console.warn('[AppContext] insertMessage failed:', res.error);
+              }
+            });
           }
 
           return { ...previous, messages: [...previous.messages, message] };
@@ -1120,8 +1154,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setDecryptedEntries((prev) => prev.filter((e) => e.id !== id));
         update((p) => ({ ...p, journal: p.journal.filter((j) => j.id !== id) }));
       },
+
+      refreshWorkspaceMessages: async () => {
+        const currentWsId = state.workspace?.id;
+        if (!currentWsId || !isUUID(currentWsId)) return;
+        try {
+          const fetched = await supabaseRepo.fetchMessages('workspace', currentWsId);
+          if (fetched.length > 0) {
+            update((p) => ({ ...p, messages: fetched }));
+          }
+        } catch (err) {
+          console.warn('[AppContext] refreshWorkspaceMessages error:', err);
+        }
+      },
+
+      retryChatConnection: () => {
+        setChatRetryTrigger((prev) => prev + 1);
+      },
+
+      isChatConnected: chatConnectionStatus === 'CONNECTED',
+      chatConnectionStatus,
     };
-  }, [state, session, hydrated, isJournalUnlocked, decryptedEntries]);
+  }, [state, session, hydrated, isJournalUnlocked, decryptedEntries, chatConnectionStatus]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

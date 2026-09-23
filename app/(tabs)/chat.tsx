@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { router } from 'expo-router';
-import { ScrollView, View, Text, StyleSheet } from 'react-native';
+import { ScrollView, View, Text, StyleSheet, Pressable } from 'react-native';
 import { Header, Card } from '@/src/components/ui';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
@@ -103,8 +103,15 @@ export default function Chat() {
             <Text style={s.soloTitle}>Solo Mode Active</Text>
           </View>
           <Text style={s.soloBody}>
-            You are operating in Solo mode. No fake members are fabricated. Connect with a partner in Duo mode or form a Team at any time from Settings.
+            You are operating in Solo mode. Connect with a partner in Duo mode or form a Team at any time.
           </Text>
+          <Pressable
+            style={s.addFriendBtn}
+            onPress={() => navigateTo('/duo')}
+          >
+            <Ionicons name="person-add-outline" size={16} color="white" />
+            <Text style={s.addFriendBtnText}>Add Friend / Start Duo</Text>
+          </Pressable>
         </Card>
       ) : null}
 
@@ -142,5 +149,16 @@ const s = StyleSheet.create({
   soloHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   soloTitle: { color: 'white', fontSize: 15, fontWeight: '800' },
   soloBody: { color: colors.muted, fontSize: 13, lineHeight: 19 },
+  addFriendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.violet,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginTop: 12,
+  },
+  addFriendBtnText: { color: 'white', fontWeight: '700', fontSize: 13 },
   note: { color: colors.muted, textAlign: 'center', fontSize: 11, lineHeight: 16, marginHorizontal: 20, marginTop: 24 },
 });
