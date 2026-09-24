@@ -17,6 +17,9 @@ import {
   Visibility,
   Workspace,
   JournalEntry,
+  WorkspaceTheme,
+  TeamGoal,
+  DirectMessage,
 } from '@/src/types';
 import { evoryzDay } from '@/src/services/evoryzDay';
 import { journalCrypto, JournalSecurityConfig, EncryptedPayload } from '@/src/services/encryption';
@@ -192,6 +195,34 @@ type Ctx = State & {
   isChatConnected: boolean;
   chatConnectionStatus: ChatConnectionStatus;
   retryChatConnection: () => void;
+  // Evolution 2.0 Additions:
+  changeTheme: (theme: WorkspaceTheme) => Promise<boolean>;
+  setMemberRole: (targetUserId: string, role: 'admin' | 'member') => Promise<boolean>;
+  setMemberMuted: (targetUserId: string, isMuted: boolean) => Promise<boolean>;
+  removeMember: (targetUserId: string) => Promise<boolean>;
+  toggleWorkspaceNotifications: (muted: boolean) => Promise<boolean>;
+  togglePinMessage: (messageId: string, isPinned: boolean) => Promise<boolean>;
+  bookmarkMessage: (messageId: string) => Promise<boolean>;
+  removeBookmark: (messageId: string) => Promise<boolean>;
+  savedMessageIds: string[];
+  teamGoals: TeamGoal[];
+  createTeamGoal: (title: string, targetCount: number, unit?: string) => Promise<boolean>;
+  updateTeamGoal: (goalId: string, currentCount: number, completed?: boolean) => Promise<boolean>;
+  deleteTeamGoal: (goalId: string) => Promise<boolean>;
+  refreshTeamGoals: () => Promise<void>;
+  directMessages: DirectMessage[];
+  sendDirectMessage: (
+    recipientId: string,
+    content: string,
+    type?: DirectMessage['type'],
+    attachment?: Pick<DirectMessage, 'attachmentUrl' | 'thumbnailUrl'>
+  ) => Promise<boolean>;
+  deleteDirectMessage: (messageId: string) => Promise<boolean>;
+  fetchDirectMessages: (peerId: string) => Promise<DirectMessage[]>;
+  searchUsers: (query: string) => Promise<{ id: string; name: string; username: string; avatar: string }[]>;
+  deleteUserAccount: () => Promise<boolean>;
+  exportUserData: () => Promise<string | null>;
+  isOnline: boolean;
 };
 
 const Context = createContext<Ctx | null>(null);
@@ -242,13 +273,19 @@ function rollover(state: State): State {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(initial());
   const [session, setSession] = useState<Session | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+  const [localHydrated, setLocalHydrated] = useState(false);
+  const [authHydrated, setAuthHydrated] = useState(false);
+  const hydrated = localHydrated && authHydrated;
   const [isJournalUnlocked, setIsJournalUnlocked] = useState(false);
   const [decryptedEntries, setDecryptedEntries] = useState<
     { id: string; plaintext: string; timestamp: string; date: string }[]
   >([]);
   const [chatConnectionStatus, setChatConnectionStatus] = useState<ChatConnectionStatus>('DISCONNECTED');
   const [chatRetryTrigger, setChatRetryTrigger] = useState(0);
+  const [savedMessageIds, setSavedMessageIds] = useState<string[]>([]);
+  const [teamGoals, setTeamGoals] = useState<TeamGoal[]>([]);
+  const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
+  const [isOnline, setIsOnline] = useState(true);
 
   // 1. Hydrate local cached state and sound effects on launch
   useEffect(() => {
@@ -303,7 +340,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch(() => undefined)
-      .finally(() => setHydrated(true));
+      .finally(() => setLocalHydrated(true));
   }, []);
 
   useEffect(() => {
@@ -429,6 +466,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           workspace: resolvedWorkspace,
         };
       });
+      // Evolution 2.0: fetch savedMessageIds and presence
+      void supabaseRepo.updateUserPresence(true);
+      supabaseRepo.fetchSavedMessageIds(uid).then(setSavedMessageIds).catch(() => undefined);
     } catch (err) {
       console.warn('[AppContext] Cloud sync error:', err);
     }
@@ -436,12 +476,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // 3. Supabase Auth Session listener
   useEffect(() => {
-    authService.getSession().then((initialSession) => {
-      if (initialSession) {
-        setSession(initialSession);
-        syncAuthenticatedUser(initialSession);
-      }
-    });
+    authService
+      .getSession()
+      .then(async (initialSession) => {
+        if (initialSession) {
+          setSession(initialSession);
+          await syncAuthenticatedUser(initialSession);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setAuthHydrated(true));
 
     const sub = authService.onAuthStateChange((newSession) => {
       setSession(newSession);
@@ -453,6 +497,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         journalCrypto.lock();
         setIsJournalUnlocked(false);
         setDecryptedEntries([]);
+        setSavedMessageIds([]);
+        setTeamGoals([]);
+        setDirectMessages([]);
       }
     });
 
@@ -460,6 +507,72 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sub.unsubscribe();
     };
   }, []);
+
+  // 3b. Evolution 2.0 Subscriptions: Team Goals, Direct Messages, Presence
+  useEffect(() => {
+    let active = true;
+    const wsId = state.workspace?.id;
+    if (!wsId || !isUUID(wsId)) {
+      Promise.resolve().then(() => {
+        if (active) setTeamGoals([]);
+      });
+      return () => {
+        active = false;
+      };
+    }
+    supabaseRepo
+      .fetchTeamGoals(wsId)
+      .then((goals) => {
+        if (active) setTeamGoals(goals);
+      })
+      .catch(() => undefined);
+
+    const unsub = supabaseRepo.subscribeToTeamGoals(wsId, () => {
+      if (active) {
+        supabaseRepo
+          .fetchTeamGoals(wsId)
+          .then((goals) => {
+            if (active) setTeamGoals(goals);
+          })
+          .catch(() => undefined);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [state.workspace?.id]);
+
+  useEffect(() => {
+    const uid = session?.user?.id || state.user.id;
+    if (!uid || !isUUID(uid)) return;
+    const unsub = supabaseRepo.subscribeToDirectMessages(uid, (newDm: DirectMessage) => {
+      setDirectMessages((prev) => {
+        if (prev.some((m) => m.id === newDm.id)) return prev;
+        return [...prev, newDm];
+      });
+      if (newDm.senderId !== uid && state.user.settings.preferences.sfx) {
+        feedback.sound('messageReceived', true);
+      }
+    });
+    return () => unsub();
+  }, [session?.user?.id, state.user.id, state.user.settings.preferences.sfx]);
+
+  useEffect(() => {
+    const uid = session?.user?.id || state.user.id;
+    if (!uid || !isUUID(uid)) return;
+
+    const sub = AppState.addEventListener('change', (nextAppState) => {
+      const active = nextAppState === 'active';
+      setIsOnline(active);
+      void supabaseRepo.updateUserPresence(active);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [session?.user?.id, state.user.id]);
 
   // 4. Subscribe to Realtime messages when workspace and authenticated session are active
   useEffect(() => {
@@ -1337,8 +1450,285 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       isChatConnected: chatConnectionStatus === 'CONNECTED',
       chatConnectionStatus,
+
+      // ----------------------------------------------------------------------
+      // EVOLUTION 2.0 MASTER FEATURES
+      // ----------------------------------------------------------------------
+      changeTheme: async (theme: WorkspaceTheme) => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.setWorkspaceTheme(wsId, theme);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace ? { ...p.workspace, theme } : undefined,
+          }));
+        }
+        return ok;
+      },
+
+      setMemberRole: async (targetUserId: string, role: 'admin' | 'member') => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId) || !isUUID(targetUserId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.setWorkspaceMemberRole(wsId, targetUserId, role);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace
+              ? {
+                  ...p.workspace,
+                  members: p.workspace.members.map((m) => (m.id === targetUserId ? { ...m, role } : m)),
+                }
+              : undefined,
+          }));
+        }
+        return ok;
+      },
+
+      setMemberMuted: async (targetUserId: string, isMuted: boolean) => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId) || !isUUID(targetUserId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.setWorkspaceMemberMuted(wsId, targetUserId, isMuted);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace
+              ? {
+                  ...p.workspace,
+                  members: p.workspace.members.map((m) => (m.id === targetUserId ? { ...m, isMuted } : m)),
+                }
+              : undefined,
+          }));
+        }
+        return ok;
+      },
+
+      removeMember: async (targetUserId: string) => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId) || !isUUID(targetUserId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.removeWorkspaceMember(wsId, targetUserId);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace
+              ? {
+                  ...p.workspace,
+                  members: p.workspace.members.filter((m) => m.id !== targetUserId),
+                }
+              : undefined,
+          }));
+        }
+        return ok;
+      },
+
+      toggleWorkspaceNotifications: async (muted: boolean) => {
+        const wsId = state.workspace?.id;
+        const uid = state.user.id;
+        if (!wsId || !isUUID(wsId) || !isUUID(uid)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.toggleWorkspaceNotifications(wsId, muted);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace
+              ? {
+                  ...p.workspace,
+                  members: p.workspace.members.map((m) =>
+                    m.id === uid ? { ...m, notificationsMuted: muted } : m
+                  ),
+                }
+              : undefined,
+          }));
+        }
+        return ok;
+      },
+
+      togglePinMessage: async (messageId: string, isPinned: boolean) => {
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.togglePinMessage(messageId, isPinned);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            messages: p.messages.map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    isPinned,
+                    pinnedBy: isPinned ? state.user.id : undefined,
+                    pinnedAt: isPinned ? stamp() : undefined,
+                  }
+                : m
+            ),
+          }));
+        }
+        return ok;
+      },
+
+      bookmarkMessage: async (messageId: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.bookmarkMessage(uid, messageId);
+        if (ok) {
+          setSavedMessageIds((prev) => (prev.includes(messageId) ? prev : [...prev, messageId]));
+        }
+        return ok;
+      },
+
+      removeBookmark: async (messageId: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.removeBookmark(uid, messageId);
+        if (ok) {
+          setSavedMessageIds((prev) => prev.filter((id) => id !== messageId));
+        }
+        return ok;
+      },
+
+      savedMessageIds,
+      teamGoals,
+
+      createTeamGoal: async (title: string, targetCount: number, unit?: string) => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        const newGoal = await supabaseRepo.createTeamGoal(wsId, title, targetCount, unit);
+        if (newGoal) {
+          setTeamGoals((prev) => [...prev, newGoal]);
+          return true;
+        }
+        return false;
+      },
+
+      updateTeamGoal: async (goalId: string, currentCount: number) => {
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.updateTeamGoal(goalId, currentCount);
+        if (ok) {
+          setTeamGoals((prev) => prev.map((g) => (g.id === goalId ? { ...g, current: currentCount } : g)));
+          return true;
+        }
+        return false;
+      },
+
+      deleteTeamGoal: async (goalId: string) => {
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.deleteTeamGoal(goalId);
+        if (ok) {
+          setTeamGoals((prev) => prev.filter((g) => g.id !== goalId));
+        }
+        return ok;
+      },
+
+      refreshTeamGoals: async () => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId)) return;
+        const goals = await supabaseRepo.fetchTeamGoals(wsId);
+        setTeamGoals(goals);
+      },
+
+      directMessages,
+
+      sendDirectMessage: async (
+        recipientId: string,
+        content: string,
+        type: DirectMessage['type'] = 'text',
+        attachment
+      ) => {
+        const uid = state.user.id;
+        if (!isUUID(uid) || !isUUID(recipientId)) return false;
+        feedback.tap(state.user.settings.preferences.haptics);
+        feedback.sound('send', state.user.settings.preferences.sfx);
+
+        const convId = [uid, recipientId].sort().join('_');
+        const newDm: DirectMessage = {
+          id: generateUUID(),
+          conversationId: convId,
+          senderId: uid,
+          recipientId,
+          senderName: state.user.name,
+          senderAvatar: state.user.avatar,
+          content,
+          type,
+          attachmentUrl: attachment?.attachmentUrl,
+          thumbnailUrl: attachment?.thumbnailUrl,
+          createdAt: stamp(),
+        };
+
+        setDirectMessages((prev) => [...prev, newDm]);
+        const res = await supabaseRepo.sendDirectMessage(newDm);
+        return Boolean(res.success);
+      },
+
+      deleteDirectMessage: async (messageId: string) => {
+        feedback.tap(state.user.settings.preferences.haptics);
+        const ok = await supabaseRepo.deleteDirectMessage(messageId);
+        if (ok) {
+          setDirectMessages((prev) => prev.filter((d) => d.id !== messageId));
+        }
+        return ok;
+      },
+
+      fetchDirectMessages: async (peerId: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid) || !isUUID(peerId)) return [];
+        const msgs = await supabaseRepo.fetchDirectMessages(uid, peerId);
+        setDirectMessages((prev) => {
+          const map = new Map<string, DirectMessage>();
+          prev.forEach((m) => map.set(m.id, m));
+          msgs.forEach((m) => map.set(m.id, m));
+          return Array.from(map.values()).sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+        });
+        return msgs;
+      },
+
+      searchUsers: async (query: string) => {
+        return supabaseRepo.searchUsersByUsername(query);
+      },
+
+      deleteUserAccount: async () => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return false;
+        const res = await supabaseRepo.deleteUserAccount();
+        if (res.success) {
+          await authService.signOut();
+          journalCrypto.lock();
+          setIsJournalUnlocked(false);
+          setDecryptedEntries([]);
+          setState(initial('unauthenticated'));
+          await AsyncStorage.removeItem(storageKey);
+          return true;
+        }
+        return false;
+      },
+
+      exportUserData: async () => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return null;
+        const data = await supabaseRepo.exportUserData(uid);
+        return data ? JSON.stringify(data, null, 2) : null;
+      },
+
+      isOnline,
     };
-  }, [state, session, hydrated, isJournalUnlocked, decryptedEntries, chatConnectionStatus]);
+  }, [
+    state,
+    session,
+    hydrated,
+    isJournalUnlocked,
+    decryptedEntries,
+    chatConnectionStatus,
+    savedMessageIds,
+    teamGoals,
+    directMessages,
+    isOnline,
+  ]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

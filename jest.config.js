@@ -5,6 +5,7 @@ module.exports = {
   },
   moduleNameMapper: {
     '\\.(mp3|wav|m4a|ogg)$': '<rootDir>/__mocks__/fileMock.js',
+    '^expo-asset$': '<rootDir>/__mocks__/expoAssetMock.js',
     '^@/(.*)$': '<rootDir>/$1',
   },
 };

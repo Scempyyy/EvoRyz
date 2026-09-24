@@ -11,6 +11,7 @@ import {
   Alert,
   BackHandler,
   ActivityIndicator,
+  Share,
 } from 'react-native';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,6 +21,7 @@ import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { feedback } from '@/src/services/feedback';
+import { sfx, ALL_SFX_LIST } from '@/src/services/sfx';
 import { UpdatesService, UpdateCheckResult } from '@/src/services/updates';
 import { sendTestNotification } from '@/src/services/notifications';
 
@@ -48,6 +50,8 @@ export default function Profile() {
     removeUserAvatar,
     uploadWorkspaceAvatar,
     updateWorkspaceIdentity,
+    exportUserData,
+    deleteUserAccount,
   } = useApp();
 
   const [activeModal, setActiveModal] = useState<
@@ -338,6 +342,11 @@ export default function Profile() {
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <Header title="Profile" sub="Your account & evolution" />
 
+      <View style={s.creatorBadge}>
+        <Ionicons name="sparkles" size={14} color="#A78BFA" />
+        <Text style={s.creatorText}>Made by Scempyy</Text>
+      </View>
+
       {/* User Card */}
       <Card style={s.person}>
         <Pressable onPress={handleAvatarPress} style={s.avatarWrapper} disabled={avatarLoading}>
@@ -455,6 +464,27 @@ export default function Profile() {
           trackColor={{ true: colors.violet }}
         />
       </View>
+
+      {/* SFX Audio Test Panel */}
+      <Text style={s.section}>SFX SOUND TEST PANEL (11 SOUNDS)</Text>
+      <Card style={s.sfxPanel}>
+        <Text style={s.sfxPanelSub}>Tap any sound below to verify real-device audio playback:</Text>
+        <View style={s.sfxGrid}>
+          {ALL_SFX_LIST.map((item) => (
+            <Pressable
+              key={item.id}
+              style={s.sfxButton}
+              onPress={() => {
+                feedback.tap(preferences.haptics);
+                void sfx.play(item.id);
+              }}
+            >
+              <Ionicons name="volume-high" size={14} color={colors.violetLight} />
+              <Text style={s.sfxButtonText} numberOfLines={1}>{item.name}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Card>
 
       {/* Interactive Settings Sections */}
       <Text style={s.section}>SETTINGS & CONTROLS</Text>
@@ -1062,6 +1092,60 @@ export default function Profile() {
               <Text style={s.btnSecondaryText}>Sync & Revalidate Cache</Text>
             </Pressable>
 
+            {/* Export My Data */}
+            <Pressable
+              style={[s.btnSecondary, { marginTop: 12, borderColor: colors.violetLight }]}
+              onPress={async () => {
+                feedback.tap(preferences.haptics);
+                const jsonStr = await exportUserData();
+                if (jsonStr) {
+                  try {
+                    await Share.share({
+                      title: 'EvoRyz Exported Data',
+                      message: jsonStr,
+                    });
+                  } catch {
+                    Alert.alert('Data Exported', 'Your data has been compiled successfully.');
+                  }
+                } else {
+                  Alert.alert('Export Failed', 'Could not export user data.');
+                }
+              }}
+            >
+              <Text style={[s.btnSecondaryText, { color: colors.violetLight }]}>Export My Data (JSON)</Text>
+            </Pressable>
+
+            {/* Delete Account */}
+            <Pressable
+              style={[s.btnSecondary, { marginTop: 12, borderColor: colors.red }]}
+              onPress={() => {
+                feedback.tap(true);
+                Alert.alert(
+                  'Delete Account',
+                  'Permanently delete your EvoRyz account, workspace memberships, and all private encrypted data? This action CANNOT be undone.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete Forever',
+                      style: 'destructive',
+                      onPress: async () => {
+                        feedback.tap(true);
+                        const ok = await deleteUserAccount();
+                        if (ok) {
+                          setActiveModal(null);
+                          router.replace('/welcome');
+                        } else {
+                          Alert.alert('Deletion Error', 'Could not delete account. Please try again.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+            >
+              <Text style={[s.btnSecondaryText, { color: colors.red }]}>Delete Account</Text>
+            </Pressable>
+
             <Pressable style={[s.modalClose, { marginTop: 16 }]} onPress={() => setActiveModal(null)}>
               <Text style={s.modalCloseText}>Close</Text>
             </Pressable>
@@ -1344,5 +1428,56 @@ const s = StyleSheet.create({
     color: 'white',
     paddingVertical: 12,
     fontSize: 15,
+  },
+  creatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#1E1633',
+    borderColor: '#3B2966',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  creatorText: {
+    color: '#DDD6FE',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  sfxPanel: {
+    padding: 14,
+    marginBottom: 10,
+  },
+  sfxPanelSub: {
+    color: colors.muted,
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  sfxGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  sfxButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.surface2,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  sfxButtonText: {
+    color: '#E0E7FF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

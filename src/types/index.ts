@@ -30,12 +30,18 @@ export interface User {
 }
 
 /** A workspace is the shared boundary. Solo deliberately has no workspace. */
+export type WorkspaceTheme = 'default' | 'harry_potter' | 'stranger_things';
+
 export interface WorkspaceMember {
   id: string;
   name: string;
   avatar: string;
   email?: string;
-  role?: string;
+  role?: 'owner' | 'admin' | 'member' | string;
+  isMuted?: boolean;
+  notificationsMuted?: boolean;
+  lastSeen?: string;
+  isOnline?: boolean;
 }
 
 export interface Workspace {
@@ -45,6 +51,7 @@ export interface Workspace {
   inviteCode: string;
   members: WorkspaceMember[];
   avatarUrl?: string;
+  theme?: WorkspaceTheme;
 }
 
 export interface DailyTask {
@@ -102,11 +109,18 @@ export interface Message {
   conversationId: string;
   senderId: string;
   senderName?: string;
-  type: 'text' | 'system' | 'image' | 'video' | 'voice' | 'file';
+  senderAvatar?: string;
+  type: 'text' | 'system' | 'image' | 'video' | 'voice' | 'file' | 'ai';
   content: string;
   timestamp: string;
   status?: 'sent' | 'delivered' | 'read' | 'failed';
   replyTo?: string;
+  replyToMessage?: {
+    id: string;
+    senderName?: string;
+    content: string;
+    type?: string;
+  };
   reactions?: string[];
   uri?: string;
   thumbnailUri?: string;
@@ -116,6 +130,11 @@ export interface Message {
   width?: number;
   height?: number;
   duration?: number;
+  isPinned?: boolean;
+  pinnedBy?: string;
+  pinnedAt?: string;
+  isSaved?: boolean;
+  isPending?: boolean;
 }
 
 export interface JournalEntry {
@@ -153,7 +172,7 @@ export interface ActivityEvent {
   id: string;
   userId: string;
   workspaceId?: string;
-  type: 'completed' | 'streak' | 'created';
+  type: 'completed' | 'streak' | 'created' | 'joined' | 'left';
   title: string;
   visibility: Visibility;
   timestamp: string;
@@ -163,4 +182,53 @@ export interface DailySummary {
   date: string;
   you: number;
   shared?: number;
+}
+
+export interface TeamGoal {
+  id: string;
+  workspaceId: string;
+  title: string;
+  target: number;
+  current: number;
+  unit?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DirectMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  recipientId: string;
+  senderName?: string;
+  senderAvatar?: string;
+  content: string;
+  type: 'text' | 'image' | 'video' | 'voice' | 'file';
+  attachmentUrl?: string;
+  thumbnailUrl?: string;
+  isPinned?: boolean;
+  reactions?: string[];
+  replyToId?: string;
+  replyToContent?: string;
+  createdAt: string;
+  updatedAt?: string;
+  isPending?: boolean;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  workspaceId: string;
+  actorId?: string;
+  actorName?: string;
+  action: string;
+  details: Record<string, any>;
+  createdAt: string;
+}
+
+export interface OfflinePendingAction {
+  id: string;
+  type: 'send_message' | 'send_dm' | 'toggle_task' | 'add_task';
+  payload: any;
+  createdAt: number;
 }

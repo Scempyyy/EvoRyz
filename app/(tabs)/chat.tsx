@@ -1,13 +1,30 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { router } from 'expo-router';
-import { ScrollView, View, Text, StyleSheet, Pressable } from 'react-native';
+import { ScrollView, View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Modal } from 'react-native';
 import { Header, Card } from '@/src/components/ui';
+import { Avatar } from '@/src/components/Avatar';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { feedback } from '@/src/services/feedback';
 
 export default function Chat() {
-  const { messages, journal, workspace, mode, user } = useApp();
+  const {
+    messages,
+    journal,
+    workspace,
+    mode,
+    user,
+    searchUsers,
+    directMessages,
+    savedMessageIds,
+  } = useApp();
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ id: string; name: string; username: string; avatar: string }[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSavedModal, setShowSavedModal] = useState(false);
+
   const lastMsg = messages.at(-1)?.content ?? 'Start a conversation';
   const isSolo = mode === 'solo' || !workspace;
 
@@ -21,6 +38,45 @@ export default function Chat() {
     }, 500);
   };
 
+  const handleSearchChange = async (q: string) => {
+    setSearchQuery(q);
+    const cleaned = q.trim();
+    if (cleaned.length >= 2) {
+      setIsSearching(true);
+      try {
+        const results = await searchUsers(cleaned);
+        // Exclude myself
+        setSearchResults(results.filter((u) => u.id !== user.id));
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    } else {
+      setSearchResults([]);
+      setIsSearching(false);
+    }
+  };
+
+  // Group direct messages by peer
+  const dmsByPeer = new Map<string, { peerId: string; peerName: string; peerAvatar: string; lastMsg: string; timestamp: string }>();
+  for (const dm of directMessages) {
+    const isMine = dm.senderId === user.id;
+    const peerId = isMine ? dm.recipientId : dm.senderId;
+    const peerName = isMine ? 'Direct Message' : (dm.senderName || 'Direct Message');
+    const peerAvatar = isMine ? 'U' : (dm.senderAvatar || 'U');
+    dmsByPeer.set(peerId, {
+      peerId,
+      peerName,
+      peerAvatar,
+      lastMsg: dm.content,
+      timestamp: dm.createdAt,
+    });
+  }
+  const peerList = Array.from(dmsByPeer.values());
+
+  const savedMessages = messages.filter((m) => savedMessageIds.includes(m.id));
+
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
       <Header
@@ -30,7 +86,58 @@ export default function Chat() {
         avatarUri={user?.avatar}
       />
 
-      {/* 1. Private Personal Journal */}
+      {/* 1. Direct Message Search Bar */}
+      <View style={s.searchRow}>
+        <Ionicons name="search" size={17} color={colors.muted} />
+        <TextInput
+          value={searchQuery}
+          onChangeText={handleSearchChange}
+          placeholder="Search by @username to start a DM…"
+          placeholderTextColor={colors.muted}
+          style={s.searchInput}
+          autoCapitalize="none"
+        />
+        {isSearching && <ActivityIndicator size="small" color={colors.violetLight} />}
+        {searchQuery ? (
+          <Pressable
+            hitSlop={8}
+            onPress={() => {
+              setSearchQuery('');
+              setSearchResults([]);
+            }}
+          >
+            <Ionicons name="close-circle" size={18} color={colors.muted} />
+          </Pressable>
+        ) : null}
+      </View>
+
+      {/* User Search Results */}
+      {searchResults.length > 0 && (
+        <View style={s.searchResultsBox}>
+          <Text style={s.searchResultHeader}>USERS FOUND</Text>
+          {searchResults.map((u) => (
+            <Pressable
+              key={u.id}
+              style={s.searchResultRow}
+              onPress={() => {
+                feedback.tap(user.settings.preferences.haptics);
+                setSearchQuery('');
+                setSearchResults([]);
+                navigateTo(`/conversation/dm?peerId=${u.id}&peerName=${encodeURIComponent(u.name)}&peerAvatar=${encodeURIComponent(u.avatar)}`);
+              }}
+            >
+              <Avatar uri={u.avatar} name={u.name} size={36} />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={s.searchResultName}>{u.name}</Text>
+                <Text style={s.searchResultHandle}>@{u.username}</Text>
+              </View>
+              <Ionicons name="chatbubble-outline" size={18} color={colors.violetLight} />
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {/* 2. Private Personal Journal */}
       <Card
         style={s.chat}
         onPress={() => navigateTo('/conversation/journal')}
@@ -52,7 +159,7 @@ export default function Chat() {
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </Card>
 
-      {/* 2. EvoRyz AI Mentor (Always available in Solo or as an assistant) */}
+      {/* 3. EvoRyz AI Mentor */}
       <Card
         style={s.chat}
         onPress={() => navigateTo('/conversation/ai')}
@@ -74,7 +181,7 @@ export default function Chat() {
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </Card>
 
-      {/* 3. Workspace Chat (Duo / Team) */}
+      {/* 4. Workspace Chat (Duo / Team) */}
       {workspace ? (
         <Card
           style={s.chat}
@@ -115,9 +222,95 @@ export default function Chat() {
         </Card>
       ) : null}
 
+      {/* 5. Direct Messages List */}
+      {peerList.length > 0 && (
+        <View style={{ marginTop: 14 }}>
+          <Text style={s.sectionHeaderTitle}>DIRECT MESSAGES</Text>
+          {peerList.map((peer) => (
+            <Card
+              key={peer.peerId}
+              style={s.chat}
+              onPress={() =>
+                navigateTo(
+                  `/conversation/dm?peerId=${peer.peerId}&peerName=${encodeURIComponent(
+                    peer.peerName
+                  )}&peerAvatar=${encodeURIComponent(peer.peerAvatar)}`
+                )
+              }
+            >
+              <Avatar uri={peer.peerAvatar} name={peer.peerName} size={48} />
+              <View style={s.info}>
+                <View style={s.rowTop}>
+                  <Text style={s.name}>{peer.peerName}</Text>
+                  <Text style={s.time}>DM</Text>
+                </View>
+                <Text style={s.preview} numberOfLines={1}>
+                  {peer.lastMsg}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+            </Card>
+          ))}
+        </View>
+      )}
+
+      {/* 6. Saved / Bookmarked Messages Shortcut */}
+      {savedMessageIds.length > 0 && (
+        <Card
+          style={[s.chat, { marginTop: 10, borderColor: '#4C3B78' }]}
+          onPress={() => {
+            feedback.tap(user.settings.preferences.haptics);
+            setShowSavedModal(true);
+          }}
+        >
+          <View style={[s.icon, { backgroundColor: '#2D1B4D' }]}>
+            <Ionicons name="bookmark" size={20} color="#FBBF24" />
+          </View>
+          <View style={s.info}>
+            <Text style={s.name}>Saved Messages</Text>
+            <Text style={s.preview}>{savedMessageIds.length} bookmarked message{savedMessageIds.length === 1 ? '' : 's'}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+        </Card>
+      )}
+
       <Text style={s.note}>
         Journal is cryptographically encrypted with your PIN. Workspace messages sync across members using Supabase.
       </Text>
+
+      {/* Bookmarks / Saved Messages Modal */}
+      <Modal visible={showSavedModal} transparent animationType="fade" onRequestClose={() => setShowSavedModal(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>Saved Messages</Text>
+              <Pressable hitSlop={10} onPress={() => setShowSavedModal(false)}>
+                <Ionicons name="close" size={22} color={colors.muted} />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 350, marginTop: 12 }}>
+              {savedMessages.length === 0 ? (
+                <Text style={{ color: colors.muted, textAlign: 'center', paddingVertical: 20 }}>
+                  No saved messages found in active memory.
+                </Text>
+              ) : (
+                savedMessages.map((m) => (
+                  <View key={m.id} style={s.savedMsgCard}>
+                    <Text style={s.savedMsgSender}>{m.senderName || 'Member'}</Text>
+                    <Text style={s.savedMsgContent}>{m.content}</Text>
+                    <Text style={s.savedMsgTime}>
+                      {new Date(m.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <Pressable style={s.modalClose} onPress={() => setShowSavedModal(false)}>
+              <Text style={s.modalCloseText}>Done</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -125,6 +318,62 @@ export default function Chat() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 18, paddingBottom: 95 },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 14,
+  },
+  searchInput: {
+    flex: 1,
+    color: 'white',
+    fontSize: 14,
+  },
+  searchResultsBox: {
+    backgroundColor: '#1E1933',
+    borderColor: '#372E5C',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+  },
+  searchResultHeader: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  searchResultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2B2348',
+  },
+  searchResultName: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  searchResultHandle: {
+    color: colors.violetLight,
+    fontSize: 12,
+  },
+  sectionHeaderTitle: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 8,
+    marginTop: 4,
+  },
   chat: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   icon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
   info: { flex: 1 },
@@ -161,4 +410,64 @@ const s = StyleSheet.create({
   },
   addFriendBtnText: { color: 'white', fontWeight: '700', fontSize: 13 },
   note: { color: colors.muted, textAlign: 'center', fontSize: 11, lineHeight: 16, marginHorizontal: 20, marginTop: 24 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: '#181329',
+    borderColor: '#31274F',
+    borderWidth: 1,
+    borderRadius: 20,
+    padding: 20,
+    width: '100%',
+    maxWidth: 380,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalClose: {
+    backgroundColor: colors.surface,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  modalCloseText: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  savedMsgCard: {
+    backgroundColor: colors.surface,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  savedMsgSender: {
+    color: colors.violetLight,
+    fontWeight: '700',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  savedMsgContent: {
+    color: 'white',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  savedMsgTime: {
+    color: colors.muted,
+    fontSize: 10,
+    marginTop: 6,
+  },
 });

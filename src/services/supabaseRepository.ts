@@ -11,6 +11,10 @@ import {
   ActivityEvent,
   DailySummary,
   User,
+  WorkspaceTheme,
+  TeamGoal,
+  DirectMessage,
+  AuditLogEntry,
 } from '@/src/types';
 import { JournalSecurityConfig } from '@/src/services/encryption';
 import { ensureUUID, isUUID, generateUUID } from '@/src/utils/uuid';
@@ -473,7 +477,7 @@ export class SupabaseRepository {
         workspaceId: row.workspace_id ?? undefined,
         conversationId: row.conversation_id || conversationId,
         senderId: row.sender_id,
-        type: row.type || 'text',
+        type: row.message_type || row.type || 'text',
         content: row.content || row.body || '',
         timestamp: row.created_at,
         status: row.status ?? 'sent',
@@ -487,10 +491,35 @@ export class SupabaseRepository {
         width: row.width ?? undefined,
         height: row.height ?? undefined,
         duration: row.duration ?? undefined,
+        isPinned: Boolean(row.is_pinned),
+        pinnedBy: row.pinned_by ?? undefined,
+        pinnedAt: row.pinned_at ?? undefined,
       }));
     } catch (err) {
       console.warn('[SupabaseRepository] fetchMessages exception:', err);
       return [];
+    }
+  }
+
+  async insertActivity(activity: ActivityEvent): Promise<boolean> {
+    try {
+      if (!isUUID(activity.userId)) return false;
+      const { error } = await supabase.from('activities').insert({
+        id: ensureUUID(activity.id),
+        user_id: ensureUUID(activity.userId),
+        workspace_id: activity.workspaceId && isUUID(activity.workspaceId) ? ensureUUID(activity.workspaceId) : null,
+        type: activity.type,
+        title: activity.title,
+        visibility: activity.visibility,
+        timestamp: activity.timestamp,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] insertActivity failed:', error.message);
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -600,7 +629,7 @@ export class SupabaseRepository {
     const msgId = ensureUUID(message.id);
     const workspaceId = message.workspaceId && isUUID(message.workspaceId) ? message.workspaceId : null;
     const msgType = message.type || 'text';
-    const validDbTypes = ['text', 'image', 'video', 'file', 'voice', 'system'];
+    const validDbTypes = ['text', 'image', 'video', 'file', 'voice', 'system', 'ai'];
     const dbMessageType = validDbTypes.includes(msgType) ? msgType : 'text';
     try {
       let finalUri = message.uri || null;
@@ -852,6 +881,58 @@ export class SupabaseRepository {
     };
   }
 
+  subscribeToTeamGoals(workspaceId: string, onUpdate: () => void): () => void {
+    if (!isUUID(workspaceId)) return () => {};
+    const channelName = `realtime-team-goals-${workspaceId}-${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'team_goals', filter: `workspace_id=eq.${workspaceId}` },
+        () => onUpdate()
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel).catch(() => {});
+    };
+  }
+
+  subscribeToDirectMessages(userId: string, onMessage: (msg: DirectMessage) => void): () => void {
+    if (!isUUID(userId)) return () => {};
+    const channelName = `realtime-dm-${userId}-${Date.now()}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'direct_messages', filter: `recipient_id=eq.${userId}` },
+        (payload) => {
+          const row = payload.new as any;
+          if (row) {
+            onMessage({
+              id: row.id,
+              conversationId: row.conversation_id,
+              senderId: row.sender_id,
+              recipientId: row.recipient_id,
+              content: row.content,
+              type: row.message_type || 'text',
+              attachmentUrl: row.attachment_url ?? undefined,
+              thumbnailUrl: row.thumbnail_url ?? undefined,
+              isPinned: Boolean(row.is_pinned),
+              reactions: Array.isArray(row.reactions) ? row.reactions : [],
+              replyToId: row.reply_to_id ?? undefined,
+              createdAt: row.created_at,
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel).catch(() => {});
+    };
+  }
+
   // --------------------------------------------------------------------------
   // JOURNAL ENTRIES (CIPHERTEXT ONLY)
   // --------------------------------------------------------------------------
@@ -985,10 +1066,10 @@ export class SupabaseRepository {
         }));
       }
 
-      // 2. Fallback to direct workspace_members table query
+      // 2. Query workspace_members table with role and mute settings
       const { data: memRows, error: memErr } = await supabase
         .from('workspace_members')
-        .select('user_id, role')
+        .select('user_id, role, is_muted, notifications_muted')
         .eq('workspace_id', workspaceId);
 
       if (memErr) {
@@ -997,15 +1078,18 @@ export class SupabaseRepository {
       }
       if (!memRows || !memRows.length) return [];
 
-      // 3. Fetch profiles for all member user_ids
+      // 3. Fetch profiles with presence for all member user_ids
       const userIds = memRows.map((r) => r.user_id).filter(isUUID);
-      const profileMap = new Map<string, { name?: string | null; avatar_url?: string | null }>();
+      const profileMap = new Map<
+        string,
+        { name?: string | null; avatar_url?: string | null; last_seen?: string | null; is_online?: boolean | null }
+      >();
 
       if (userIds.length > 0) {
         try {
           const { data: profiles } = await supabase
             .from('profiles')
-            .select('id, name, avatar_url')
+            .select('id, name, avatar_url, last_seen, is_online')
             .in('id', userIds);
 
           (profiles || []).forEach((p) => {
@@ -1021,6 +1105,11 @@ export class SupabaseRepository {
           id: row.user_id,
           name,
           avatar: prof?.avatar_url || name.charAt(0).toUpperCase() || 'M',
+          role: row.role || 'member',
+          isMuted: Boolean(row.is_muted),
+          notificationsMuted: Boolean(row.notifications_muted),
+          lastSeen: prof?.last_seen ?? undefined,
+          isOnline: Boolean(prof?.is_online),
         };
       });
     } catch (err) {
@@ -1045,10 +1134,10 @@ export class SupabaseRepository {
       const wsId = memberRows[0].workspace_id;
       if (!isUUID(wsId)) return null;
 
-      // 2. Query workspace directly
+      // 2. Query workspace directly including theme
       const { data: wsRow, error: wsErr } = await supabase
         .from('workspaces')
-        .select('id, name, mode, invite_code, avatar_url')
+        .select('id, name, mode, invite_code, avatar_url, theme')
         .eq('id', wsId)
         .maybeSingle();
 
@@ -1057,7 +1146,7 @@ export class SupabaseRepository {
       // 3. Load full membership list
       let members = await this.loadWorkspaceMembers(wsRow.id);
       if (!members || members.length === 0) {
-        members = [{ id: userId, name: 'You', avatar: 'Y' }];
+        members = [{ id: userId, name: 'You', avatar: 'Y', role: 'member' }];
       }
 
       return {
@@ -1067,6 +1156,7 @@ export class SupabaseRepository {
         inviteCode: wsRow.invite_code,
         members,
         avatarUrl: wsRow.avatar_url ?? undefined,
+        theme: (wsRow.theme as any) || 'default',
       };
     } catch {
       return null;
@@ -1405,20 +1495,448 @@ export class SupabaseRepository {
     }
   }
 
-  async insertActivity(activity: ActivityEvent): Promise<void> {
-    if (!activity.workspaceId || !isUUID(activity.workspaceId) || !isUUID(activity.userId)) return;
-    const actId = ensureUUID(activity.id);
+  // --------------------------------------------------------------------------
+  // EVOLUTION 2.0: MESSAGE PINNING & BOOKMARKS
+  // --------------------------------------------------------------------------
+  async togglePinMessage(messageId: string, pin: boolean): Promise<boolean> {
+    if (!isUUID(messageId)) return false;
     try {
-      await supabase.from('activities').insert({
-        id: actId,
-        user_id: activity.userId,
-        workspace_id: activity.workspaceId,
-        type: activity.type,
-        title: activity.title,
-        visibility: activity.visibility,
+      const { data, error } = await supabase.rpc('toggle_pin_message', {
+        target_message_id: messageId,
+        pin,
       });
+      if (error) {
+        console.warn('[SupabaseRepository] togglePinMessage error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async bookmarkMessage(userId: string, messageId: string): Promise<boolean> {
+    if (!isUUID(userId) || !isUUID(messageId)) return false;
+    try {
+      const { error } = await supabase.from('saved_messages').insert({
+        user_id: userId,
+        message_id: messageId,
+      });
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  async removeBookmark(userId: string, messageId: string): Promise<boolean> {
+    if (!isUUID(userId) || !isUUID(messageId)) return false;
+    try {
+      const { error } = await supabase
+        .from('saved_messages')
+        .delete()
+        .eq('user_id', userId)
+        .eq('message_id', messageId);
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  async fetchSavedMessageIds(userId: string): Promise<string[]> {
+    if (!isUUID(userId)) return [];
+    try {
+      const { data, error } = await supabase
+        .from('saved_messages')
+        .select('message_id')
+        .eq('user_id', userId);
+      if (error || !data) return [];
+      return data.map((d) => d.message_id);
+    } catch {
+      return [];
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // EVOLUTION 2.0: TEAM ADMIN & THEMES
+  // --------------------------------------------------------------------------
+  async setWorkspaceTheme(workspaceId: string, theme: WorkspaceTheme): Promise<boolean> {
+    if (!isUUID(workspaceId)) return false;
+    try {
+      const { data, error } = await supabase.rpc('set_workspace_theme', {
+        target_workspace_id: workspaceId,
+        new_theme: theme,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] setWorkspaceTheme error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async setWorkspaceMemberRole(workspaceId: string, targetUserId: string, role: 'owner' | 'admin' | 'member'): Promise<boolean> {
+    if (!isUUID(workspaceId) || !isUUID(targetUserId)) return false;
+    try {
+      const { data, error } = await supabase.rpc('set_workspace_member_role', {
+        target_workspace_id: workspaceId,
+        target_user_id: targetUserId,
+        new_role: role,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] setWorkspaceMemberRole error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async setWorkspaceMemberMuted(workspaceId: string, targetUserId: string, muted: boolean): Promise<boolean> {
+    if (!isUUID(workspaceId) || !isUUID(targetUserId)) return false;
+    try {
+      const { data, error } = await supabase.rpc('set_workspace_member_muted', {
+        target_workspace_id: workspaceId,
+        target_user_id: targetUserId,
+        muted,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] setWorkspaceMemberMuted error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async removeWorkspaceMember(workspaceId: string, targetUserId: string): Promise<boolean> {
+    if (!isUUID(workspaceId) || !isUUID(targetUserId)) return false;
+    try {
+      const { data, error } = await supabase.rpc('remove_workspace_member', {
+        target_workspace_id: workspaceId,
+        target_user_id: targetUserId,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] removeWorkspaceMember error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async toggleWorkspaceNotifications(workspaceId: string, muted: boolean): Promise<boolean> {
+    if (!isUUID(workspaceId)) return false;
+    try {
+      const { data, error } = await supabase.rpc('toggle_workspace_notifications', {
+        target_workspace_id: workspaceId,
+        mute_notifications: muted,
+      });
+      if (error) {
+        console.warn('[SupabaseRepository] toggleWorkspaceNotifications error:', error.message);
+        return false;
+      }
+      return Boolean(data?.success);
+    } catch {
+      return false;
+    }
+  }
+
+  async updateUserPresence(isOnline: boolean): Promise<void> {
+    try {
+      await supabase.rpc('update_user_presence', { user_online: isOnline });
     } catch (err) {
-      console.warn('[SupabaseRepository] insertActivity error:', err);
+      console.warn('[SupabaseRepository] updateUserPresence warning:', err);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // EVOLUTION 2.0: TEAM GOALS & AUDIT LOGS
+  // --------------------------------------------------------------------------
+  async fetchTeamGoals(workspaceId: string): Promise<TeamGoal[]> {
+    if (!isUUID(workspaceId)) return [];
+    try {
+      const { data, error } = await supabase
+        .from('team_goals')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: false });
+
+      if (error || !data) return [];
+      return data.map((d: any) => ({
+        id: d.id,
+        workspaceId: d.workspace_id,
+        title: d.title,
+        target: d.target,
+        current: d.current,
+        unit: d.unit || '%',
+        createdBy: d.created_by ?? undefined,
+        createdAt: d.created_at,
+        updatedAt: d.updated_at,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async createTeamGoal(workspaceId: string, title: string, target: number, unit = '%'): Promise<TeamGoal | null> {
+    if (!isUUID(workspaceId)) return null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data, error } = await supabase
+        .from('team_goals')
+        .insert({
+          workspace_id: workspaceId,
+          title: title.trim(),
+          target,
+          current: 0,
+          unit,
+          created_by: user?.id ?? null,
+        })
+        .select('*')
+        .single();
+
+      if (error || !data) return null;
+      return {
+        id: data.id,
+        workspaceId: data.workspace_id,
+        title: data.title,
+        target: data.target,
+        current: data.current,
+        unit: data.unit,
+        createdBy: data.created_by ?? undefined,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async updateTeamGoal(goalId: string, current: number): Promise<boolean> {
+    if (!isUUID(goalId)) return false;
+    try {
+      const { error } = await supabase
+        .from('team_goals')
+        .update({ current, updated_at: new Date().toISOString() })
+        .eq('id', goalId);
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  async deleteTeamGoal(goalId: string): Promise<boolean> {
+    if (!isUUID(goalId)) return false;
+    try {
+      const { error } = await supabase.from('team_goals').delete().eq('id', goalId);
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  async fetchAuditLogs(workspaceId: string): Promise<AuditLogEntry[]> {
+    if (!isUUID(workspaceId)) return [];
+    try {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error || !data) return [];
+      return data.map((d: any) => ({
+        id: d.id,
+        workspaceId: d.workspace_id,
+        actorId: d.actor_id ?? undefined,
+        action: d.action,
+        details: d.details || {},
+        createdAt: d.created_at,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // EVOLUTION 2.0: USERNAME DISCOVERY & DIRECT MESSAGES
+  // --------------------------------------------------------------------------
+  async searchUsersByUsername(query: string): Promise<User[]> {
+    const q = query.trim().replace(/^@/, '');
+    if (!q || q.length < 2) return [];
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .or(`username.ilike.%${q}%,name.ilike.%${q}%`)
+        .limit(10);
+
+      if (error || !data) return [];
+      return data.map((p) => ({
+        id: p.id,
+        name: p.name || 'User',
+        username: p.username || `user_${p.id.slice(0, 8)}`,
+        avatar: p.avatar_url || p.name?.charAt(0).toUpperCase() || 'U',
+        settings: {
+          timezone: 'UTC',
+          notifications: { enabled: true, dailyReminder: true, recapReminder: true, reminderTime: '21:00' },
+          preferences: { defaultVisibility: 'private', theme: 'dark', haptics: true, sfx: true },
+        },
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  getDmConversationId(userId1: string, userId2: string): string {
+    return [userId1, userId2].sort().join('_');
+  }
+
+  async fetchDirectMessages(currentUserId: string, otherUserId: string): Promise<DirectMessage[]> {
+    if (!isUUID(currentUserId) || !isUUID(otherUserId)) return [];
+    const convoId = this.getDmConversationId(currentUserId, otherUserId);
+    try {
+      const { data, error } = await supabase
+        .from('direct_messages')
+        .select('*')
+        .eq('conversation_id', convoId)
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      if (error || !data) return [];
+      return data.map((d: any) => ({
+        id: d.id,
+        conversationId: d.conversation_id,
+        senderId: d.sender_id,
+        recipientId: d.recipient_id,
+        content: d.content,
+        type: d.message_type || 'text',
+        attachmentUrl: d.attachment_url ?? undefined,
+        thumbnailUrl: d.thumbnail_url ?? undefined,
+        isPinned: Boolean(d.is_pinned),
+        reactions: Array.isArray(d.reactions) ? d.reactions : [],
+        replyToId: d.reply_to_id ?? undefined,
+        createdAt: d.created_at,
+        updatedAt: d.updated_at,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async sendDirectMessage(dm: Omit<DirectMessage, 'id' | 'createdAt'>): Promise<{ success: boolean; data?: DirectMessage; error?: string }> {
+    if (!isUUID(dm.senderId) || !isUUID(dm.recipientId)) {
+      return { success: false, error: 'Invalid user IDs' };
+    }
+    const convoId = this.getDmConversationId(dm.senderId, dm.recipientId);
+    try {
+      const payload: Record<string, unknown> = {
+        id: generateUUID(),
+        conversation_id: convoId,
+        sender_id: dm.senderId,
+        recipient_id: dm.recipientId,
+        content: dm.content,
+        message_type: dm.type || 'text',
+        attachment_url: dm.attachmentUrl || null,
+        thumbnail_url: dm.thumbnailUrl || null,
+        reply_to_id: dm.replyToId || null,
+        reactions: dm.reactions || [],
+      };
+
+      const { data, error } = await supabase
+        .from('direct_messages')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (error || !data) {
+        return { success: false, error: error?.message || 'Failed to send direct message' };
+      }
+
+      return {
+        success: true,
+        data: {
+          id: data.id,
+          conversationId: data.conversation_id,
+          senderId: data.sender_id,
+          recipientId: data.recipient_id,
+          content: data.content,
+          type: data.message_type,
+          attachmentUrl: data.attachment_url ?? undefined,
+          thumbnailUrl: data.thumbnail_url ?? undefined,
+          isPinned: Boolean(data.is_pinned),
+          reactions: data.reactions || [],
+          replyToId: data.reply_to_id ?? undefined,
+          createdAt: data.created_at,
+        },
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'sendDirectMessage failed';
+      return { success: false, error: msg };
+    }
+  }
+
+  async deleteDirectMessage(dmId: string): Promise<boolean> {
+    if (!isUUID(dmId)) return false;
+    try {
+      const { error } = await supabase.from('direct_messages').delete().eq('id', dmId);
+      return !error;
+    } catch {
+      return false;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // EVOLUTION 2.0: ACCOUNT DELETION & EXPORT
+  // --------------------------------------------------------------------------
+  async deleteUserAccount(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { data, error } = await supabase.rpc('delete_user_account');
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      return { success: Boolean(data?.success) };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'deleteUserAccount failed';
+      return { success: false, error: msg };
+    }
+  }
+
+  async exportUserData(userId: string): Promise<Record<string, unknown> | null> {
+    if (!isUUID(userId)) return null;
+    try {
+      const [profile, tasks, habits, goals, meals, journal, activities, workspace] = await Promise.all([
+        this.getProfile(userId),
+        supabase.from('tasks').select('*').eq('owner_id', userId),
+        supabase.from('habits').select('*').eq('owner_id', userId),
+        supabase.from('goals').select('*').eq('owner_id', userId),
+        supabase.from('meals').select('*').eq('owner_id', userId),
+        supabase.from('journal_entries').select('*').eq('owner_id', userId),
+        supabase.from('activities').select('*').eq('user_id', userId),
+        this.fetchUserWorkspace(userId),
+      ]);
+
+      return {
+        exportedAt: new Date().toISOString(),
+        userId,
+        profile,
+        workspace,
+        tasks: tasks.data || [],
+        habits: habits.data || [],
+        goals: goals.data || [],
+        meals: meals.data || [],
+        journal: journal.data || [],
+        activities: activities.data || [],
+      };
+    } catch (err) {
+      console.warn('[SupabaseRepository] exportUserData exception:', err);
+      return null;
     }
   }
 }

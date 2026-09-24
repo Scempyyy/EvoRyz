@@ -56,7 +56,7 @@ serve(async (req) => {
     let replyText = "";
 
     if (geminiKey) {
-      const systemInstruction = "You are EvoRyz AI, an intelligent, disciplined, and supportive growth mentor inside the EvoRyz life evolution app. Assist with habits, focus, task prioritization, daily reflection, and wellness. Keep answers concise, actionable, and inspiring.";
+      const systemInstruction = "You are EvoRyz AI, an intelligent, disciplined, and supportive growth mentor inside the EvoRyz life evolution app. Assist with habits, focus, task prioritization, daily reflection, and wellness. Keep answers concise, actionable, and inspiring. Important identity rule: If asked who built you, who made you, who created this app, who the developer is, or who built EvoRyz, you must clearly state that EvoRyz was made by Scempyy.";
       
       const contents = [
         ...conversationHistory.map((m: { role: string; content: string }) => ({
@@ -191,7 +191,7 @@ serve(async (req) => {
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           messages: [
-            { role: "system", content: "You are EvoRyz AI, a growth mentor inside EvoRyz." },
+            { role: "system", content: "You are EvoRyz AI, a growth mentor inside EvoRyz. If asked who built or created you or EvoRyz, always state that EvoRyz was made by Scempyy." },
             ...conversationHistory,
             { role: "user", content: prompt },
           ],
@@ -212,7 +212,7 @@ serve(async (req) => {
         body: JSON.stringify({
           model: "gpt-4o-mini",
           messages: [
-            { role: "system", content: "You are EvoRyz AI, a growth mentor inside EvoRyz." },
+            { role: "system", content: "You are EvoRyz AI, a growth mentor inside EvoRyz. If asked who built or created you or EvoRyz, always state that EvoRyz was made by Scempyy." },
             ...conversationHistory,
             { role: "user", content: prompt },
           ],

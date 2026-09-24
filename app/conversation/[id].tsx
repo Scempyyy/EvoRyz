@@ -6,6 +6,7 @@ import {
   Animated,
   BackHandler,
   Image,
+  ImageBackground,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -17,6 +18,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -56,7 +58,7 @@ const formatSize = (size?: number) =>
     : `${(size / 1024 / 1024).toFixed(1)} MB`;
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const params = useLocalSearchParams<{ id?: string | string[]; peerId?: string; peerName?: string; peerAvatar?: string }>();
   const id = (Array.isArray(params.id) ? params.id[0] : params.id)?.toLowerCase();
 
   if (id === 'journal') {
@@ -65,6 +67,10 @@ export default function ConversationScreen() {
 
   if (id === 'ai') {
     return <AiMentorComponent />;
+  }
+
+  if (id === 'dm' || id?.startsWith('dm_')) {
+    return <DirectMessageChatComponent />;
   }
 
   return <WorkspaceChatComponent />;
@@ -763,8 +769,13 @@ function JournalComponent() {
 }
 
 // ==============================================================================
-// 2. REAL WORKSPACE CHAT COMPONENT
+// 2. REAL WORKSPACE CHAT COMPONENT (WITH THEMES & EVOLUTION 2.0 FEATURES)
 // ==============================================================================
+const themeBackgrounds: Record<string, any> = {
+  harry_potter: require('@/assets/images/themes/harry-potter.jpg'),
+  stranger_things: require('@/assets/images/themes/stranger-things.jpg'),
+};
+
 function WorkspaceChatComponent() {
   const {
     messages,
@@ -774,10 +785,20 @@ function WorkspaceChatComponent() {
     refreshWorkspaceMessages,
     chatConnectionStatus,
     retryChatConnection,
+    togglePinMessage,
+    bookmarkMessage,
+    removeBookmark,
+    savedMessageIds,
   } = useApp();
+
+  const insets = useSafeAreaInsets();
   const [text, setText] = useState('');
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [viewer, setViewer] = useState<Message | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [actionMessage, setActionMessage] = useState<Message | null>(null);
   const scroll = useRef<ScrollView>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -805,12 +826,46 @@ function WorkspaceChatComponent() {
     }
   }, [workspace?.id, refreshWorkspaceMessages]);
 
-  const send = () => {
-    if (text.trim()) {
-      sendMessage(text.trim(), 'workspace');
+  const send = async () => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // In-chat /ai command trigger
+    if (trimmed.startsWith('/ai ') || trimmed === '/ai') {
+      const prompt = trimmed.slice(4).trim();
+      if (!prompt) return;
+
       setText('');
       setEmojiOpen(false);
+      setReplyingTo(null);
+
+      // Post user question into chat
+      sendMessage(trimmed, 'workspace');
+
+      // Fetch AI response and post reply into workspace chat
+      try {
+        const aiResult = await EvoRyzAIService.ask(prompt, []);
+        sendMessage(aiResult.text || 'EvoRyz was made by Scempyy.', 'workspace', 'text');
+        feedback.sound('messageReceived', user.settings.preferences.sfx);
+      } catch {
+        sendMessage(
+          'EvoRyz AI is temporarily unavailable. EvoRyz was made by Scempyy.',
+          'workspace',
+          'text'
+        );
+      }
+      return;
     }
+
+    let finalContent = trimmed;
+    if (replyingTo) {
+      finalContent = `[Replying to ${replyingTo.senderName || 'Member'}: "${replyingTo.content.slice(0, 45)}"]\n${trimmed}`;
+    }
+
+    sendMessage(finalContent, 'workspace');
+    setText('');
+    setEmojiOpen(false);
+    setReplyingTo(null);
   };
 
   const attachMedia = async (kind: 'image' | 'video') => {
@@ -888,13 +943,23 @@ function WorkspaceChatComponent() {
       ? `${workspace.name} Chat`
       : 'Workspace Chat';
 
-  return (
+  const pinnedMessage = messages.find((m) => m.isPinned);
+
+  const displayedMessages = searchQuery.trim()
+    ? messages.filter((m) => m.content.toLowerCase().includes(searchQuery.toLowerCase().trim()))
+    : messages;
+
+  const currentTheme = workspace?.theme || 'default';
+  const themeBgSource = themeBackgrounds[currentTheme];
+
+  const chatContent = (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 12}
-      style={s.root}
+      style={[s.root, themeBgSource ? { backgroundColor: 'transparent' } : null]}
     >
-      <View style={s.header}>
+      {/* Top Header */}
+      <View style={[s.header, { paddingTop: Math.max(insets.top + 8, 48) }]}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Go back"
@@ -907,7 +972,7 @@ function WorkspaceChatComponent() {
 
         <Pressable
           style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10 }}
-          onPress={() => router.push('/profile')}
+          onPress={() => router.push('/team')}
         >
           <Avatar
             uri={workspace?.avatarUrl}
@@ -949,13 +1014,59 @@ function WorkspaceChatComponent() {
 
         <Pressable
           hitSlop={10}
-          onPress={() => router.push('/profile')}
+          onPress={() => setSearchOpen((prev) => !prev)}
+          style={{ paddingHorizontal: 6, paddingVertical: 4 }}
+        >
+          <Ionicons name="search" size={20} color={searchOpen ? colors.violetLight : colors.muted} />
+        </Pressable>
+
+        <Pressable
+          hitSlop={10}
+          onPress={() => router.push('/team')}
           style={{ paddingHorizontal: 6, paddingVertical: 4 }}
         >
           <Ionicons name="ellipsis-vertical" size={20} color={colors.muted} />
         </Pressable>
       </View>
 
+      {/* In-Chat Search Bar */}
+      {searchOpen && (
+        <View style={s.searchBarRow}>
+          <Ionicons name="search" size={16} color={colors.muted} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search workspace messages…"
+            placeholderTextColor={colors.muted}
+            style={s.searchBarInput}
+            autoFocus
+          />
+          {searchQuery ? (
+            <Pressable onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={16} color={colors.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+      )}
+
+      {/* Pinned Message Bar */}
+      {pinnedMessage && (
+        <View style={s.pinnedBar}>
+          <Ionicons name="pin" size={14} color="#FBBF24" />
+          <View style={{ flex: 1, marginHorizontal: 8 }}>
+            <Text style={s.pinnedTitle}>PINNED MESSAGE</Text>
+            <Text style={s.pinnedContent} numberOfLines={1}>{pinnedMessage.content}</Text>
+          </View>
+          <Pressable
+            hitSlop={8}
+            onPress={() => void togglePinMessage(pinnedMessage.id, false)}
+          >
+            <Ionicons name="close" size={16} color={colors.muted} />
+          </Pressable>
+        </View>
+      )}
+
+      {/* Invite Banner for Solo Duo */}
       {workspace?.mode === 'duo' && workspace.members.length === 1 ? (
         <View style={s.inviteBanner}>
           <View style={{ flex: 1 }}>
@@ -984,7 +1095,7 @@ function WorkspaceChatComponent() {
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}
       >
-        {messages.length === 0 ? (
+        {displayedMessages.length === 0 ? (
           <View style={s.emptyChat}>
             <Ionicons name="chatbubbles-outline" size={44} color={colors.muted} />
             <Text style={s.emptyChatTitle}>No messages yet</Text>
@@ -993,9 +1104,9 @@ function WorkspaceChatComponent() {
             </Text>
           </View>
         ) : (
-          messages.map((m, index) => {
+          displayedMessages.map((m, index) => {
             const isMine = m.senderId === user.id || m.senderId === 'me';
-            const prevMsg = index > 0 ? messages[index - 1] : null;
+            const prevMsg = index > 0 ? displayedMessages[index - 1] : null;
             const isSameSenderAsPrev =
               prevMsg &&
               prevMsg.type !== 'system' &&
@@ -1019,6 +1130,10 @@ function WorkspaceChatComponent() {
                 showMeta={true}
                 delay={Math.min(index * 15, 120)}
                 onOpen={setViewer}
+                onLongPress={(msg) => {
+                  feedback.tap(user.settings.preferences.haptics);
+                  setActionMessage(msg);
+                }}
                 isGrouped={Boolean(isGrouped)}
                 senderName={senderName}
                 senderAvatar={senderAvatar}
@@ -1027,6 +1142,19 @@ function WorkspaceChatComponent() {
           })
         )}
       </ScrollView>
+
+      {/* Replying Banner */}
+      {replyingTo && (
+        <View style={s.replyingBar}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.replyingTitle}>Replying to {replyingTo.senderName || 'Member'}</Text>
+            <Text style={s.replyingSnippet} numberOfLines={1}>{replyingTo.content}</Text>
+          </View>
+          <Pressable hitSlop={8} onPress={() => setReplyingTo(null)}>
+            <Ionicons name="close" size={18} color={colors.muted} />
+          </Pressable>
+        </View>
+      )}
 
       {emojiOpen && (
         <View style={s.emojiRow}>
@@ -1069,7 +1197,7 @@ function WorkspaceChatComponent() {
           value={text}
           onChangeText={setText}
           onFocus={() => setEmojiOpen(false)}
-          placeholder="Message workspace…"
+          placeholder="Message or /ai prompt…"
           placeholderTextColor={colors.muted}
           style={s.input}
           multiline
@@ -1077,7 +1205,256 @@ function WorkspaceChatComponent() {
         <SendButton disabled={!text.trim()} onPress={send} />
       </View>
 
+      {/* Message Action Sheet Modal */}
+      <Modal visible={Boolean(actionMessage)} transparent animationType="fade" onRequestClose={() => setActionMessage(null)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.actionSheetTitle}>Message Options</Text>
+            <View style={{ gap: 8, marginTop: 14 }}>
+              <Pressable
+                style={s.actionSheetRow}
+                onPress={async () => {
+                  if (actionMessage) {
+                    await togglePinMessage(actionMessage.id, !actionMessage.isPinned);
+                    setActionMessage(null);
+                  }
+                }}
+              >
+                <Ionicons name="pin" size={18} color="#FBBF24" />
+                <Text style={s.actionSheetText}>
+                  {actionMessage?.isPinned ? 'Unpin Message' : 'Pin to Top of Chat'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={s.actionSheetRow}
+                onPress={async () => {
+                  if (actionMessage) {
+                    const isSaved = savedMessageIds.includes(actionMessage.id);
+                    if (isSaved) {
+                      await removeBookmark(actionMessage.id);
+                    } else {
+                      await bookmarkMessage(actionMessage.id);
+                    }
+                    setActionMessage(null);
+                  }
+                }}
+              >
+                <Ionicons
+                  name={savedMessageIds.includes(actionMessage?.id || '') ? 'bookmark' : 'bookmark-outline'}
+                  size={18}
+                  color={colors.violetLight}
+                />
+                <Text style={s.actionSheetText}>
+                  {savedMessageIds.includes(actionMessage?.id || '')
+                    ? 'Remove from Bookmarks'
+                    : 'Save to Bookmarks'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={s.actionSheetRow}
+                onPress={() => {
+                  if (actionMessage) {
+                    setReplyingTo(actionMessage);
+                    setActionMessage(null);
+                  }
+                }}
+              >
+                <Ionicons name="arrow-undo" size={18} color={colors.violetLight} />
+                <Text style={s.actionSheetText}>Reply</Text>
+              </Pressable>
+
+              <Pressable
+                style={s.actionSheetRow}
+                onPress={() => {
+                  if (actionMessage) {
+                    void Share.share({ message: actionMessage.content });
+                    setActionMessage(null);
+                  }
+                }}
+              >
+                <Ionicons name="share-outline" size={18} color={colors.violetLight} />
+                <Text style={s.actionSheetText}>Forward / Share</Text>
+              </Pressable>
+            </View>
+
+            <Pressable style={s.modalCloseBtn} onPress={() => setActionMessage(null)}>
+              <Text style={s.modalCloseBtnText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       <MediaViewer message={viewer} onClose={() => setViewer(null)} />
+    </KeyboardAvoidingView>
+  );
+
+  if (themeBgSource) {
+    return (
+      <ImageBackground source={themeBgSource} style={{ flex: 1 }} resizeMode="cover">
+        <View style={{ flex: 1, backgroundColor: 'rgba(9, 8, 18, 0.82)' }}>
+          {chatContent}
+        </View>
+      </ImageBackground>
+    );
+  }
+
+  return chatContent;
+}
+
+// ==============================================================================
+// 2b. DIRECT MESSAGES (DM) COMPONENT
+// ==============================================================================
+function DirectMessageChatComponent() {
+  const params = useLocalSearchParams<{
+    id?: string | string[];
+    peerId?: string;
+    peerName?: string;
+    peerAvatar?: string;
+  }>();
+
+  const peerId = params.peerId || '';
+  const peerName = params.peerName || 'Direct Message';
+  const peerAvatar = params.peerAvatar || 'U';
+
+  const {
+    user,
+    directMessages,
+    sendDirectMessage,
+    fetchDirectMessages,
+  } = useApp();
+
+  const insets = useSafeAreaInsets();
+  const [text, setText] = useState('');
+  const scroll = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    if (peerId && isUUID(peerId)) {
+      void fetchDirectMessages(peerId);
+    }
+  }, [peerId, fetchDirectMessages]);
+
+  const convoId = [user.id, peerId].sort().join('_');
+  const threadMessages = directMessages.filter((m) => m.conversationId === convoId);
+
+  const send = async () => {
+    if (text.trim() && peerId) {
+      await sendDirectMessage(peerId, text.trim());
+      setText('');
+    }
+  };
+
+  const attachMedia = async (kind: 'image' | 'video') => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: kind === 'image' ? ['images'] : ['videos'],
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets[0]) {
+        await sendDirectMessage(peerId, kind === 'image' ? 'Photo' : 'Video', kind, {
+          attachmentUrl: result.assets[0].uri,
+        });
+      }
+    } catch {}
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 12}
+      style={s.root}
+    >
+      <View style={[s.header, { paddingTop: Math.max(insets.top + 8, 48) }]}>
+        <Pressable
+          hitSlop={12}
+          onPress={() => router.back()}
+          style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 6 }}
+        >
+          <Ionicons name="chevron-back" size={26} color="white" />
+        </Pressable>
+        <Avatar uri={peerAvatar} name={peerName} size={40} />
+        <View style={{ flex: 1, marginLeft: 10 }}>
+          <Text style={s.title} numberOfLines={1}>
+            {peerName}
+          </Text>
+          <Text style={s.sub}>Direct Message · Realtime</Text>
+        </View>
+      </View>
+
+      <ScrollView
+        ref={scroll}
+        style={s.list}
+        contentContainerStyle={s.messages}
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}
+      >
+        {threadMessages.length === 0 ? (
+          <View style={s.emptyChat}>
+            <Ionicons name="chatbubble-ellipses-outline" size={44} color={colors.muted} />
+            <Text style={s.emptyChatTitle}>No direct messages yet</Text>
+            <Text style={s.emptyChatSub}>
+              Start a private 1-on-1 conversation with {peerName}
+            </Text>
+          </View>
+        ) : (
+          threadMessages.map((m) => {
+            const isMine = m.senderId === user.id;
+            return (
+              <View
+                key={m.id}
+                style={[
+                  isMine ? s.outgoingMessageContainer : s.incomingMessageContainer,
+                ]}
+              >
+                {!isMine && (
+                  <Avatar
+                    uri={m.senderAvatar || peerAvatar}
+                    name={m.senderName || peerName}
+                    size={28}
+                    style={s.incomingAvatar}
+                  />
+                )}
+                <View style={[s.bubble, isMine ? s.mine : s.theirs]}>
+                  {m.type === 'image' && m.attachmentUrl ? (
+                    <Image
+                      source={{ uri: m.attachmentUrl }}
+                      style={{ width: 200, height: 150, borderRadius: 8 }}
+                    />
+                  ) : (
+                    <Text style={s.message}>{m.content}</Text>
+                  )}
+                  <Text style={isMine ? s.metaMine : s.meta}>
+                    {new Date(m.createdAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
+
+      <View style={s.tools}>
+        <Tool icon="image" label="Add photo" onPress={() => void attachMedia('image')} />
+        <Tool icon="videocam" label="Add video" onPress={() => void attachMedia('video')} />
+      </View>
+
+      <View style={s.composer}>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          placeholder={`Message ${peerName}…`}
+          placeholderTextColor={colors.muted}
+          style={s.input}
+          multiline
+        />
+        <SendButton disabled={!text.trim()} onPress={send} />
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -1305,6 +1682,7 @@ function MessageBubble({
   showMeta,
   delay,
   onOpen,
+  onLongPress,
   isGrouped,
   senderName,
   senderAvatar,
@@ -1314,6 +1692,7 @@ function MessageBubble({
   showMeta: boolean;
   delay: number;
   onOpen: (m: Message) => void;
+  onLongPress?: (m: Message) => void;
   isGrouped?: boolean;
   senderName?: string;
   senderAvatar?: string;
@@ -1360,10 +1739,66 @@ function MessageBubble({
         ) : (
           <View style={s.avatarPlaceholder} />
         )}
-        <View style={[s.bubble, s.theirs]}>
-          {!isGrouped && senderName ? (
-            <Text style={s.senderLabel}>{senderName}</Text>
-          ) : null}
+        <Pressable onLongPress={() => onLongPress?.(message)} delayLongPress={280}>
+          <View style={[s.bubble, s.theirs]}>
+            {!isGrouped && senderName ? (
+              <Text style={s.senderLabel}>{senderName}</Text>
+            ) : null}
+
+            {message.isPinned && (
+              <View style={s.bubblePinnedBadge}>
+                <Ionicons name="pin" size={11} color="#FBBF24" />
+                <Text style={s.bubblePinnedText}>Pinned</Text>
+              </View>
+            )}
+
+            {message.type === 'ai' && (
+              <View style={s.bubbleAiBadge}>
+                <Ionicons name="sparkles" size={11} color="#38BDF8" />
+                <Text style={s.bubbleAiText}>EvoRyz AI</Text>
+              </View>
+            )}
+
+            {message.type === 'image' ? (
+              <ImageMessage message={message} onOpen={onOpen} />
+            ) : message.type === 'video' ? (
+              <VideoMessage message={message} onOpen={onOpen} />
+            ) : message.type === 'voice' ? (
+              <VoiceMessage message={message} />
+            ) : message.type === 'file' ? (
+              <FileMessage message={message} />
+            ) : (
+              <Text style={s.message}>{message.content}</Text>
+            )}
+
+            <Text style={s.meta}>
+              {new Date(message.timestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+          </View>
+        </Pressable>
+      </Animated.View>
+    );
+  }
+
+  // Outgoing Message (Right-aligned, vibrant violet, timestamp, checks)
+  return (
+    <Animated.View
+      style={[
+        s.outgoingMessageContainer,
+        { opacity, transform: [{ translateY: translate }] },
+      ]}
+    >
+      <Pressable onLongPress={() => onLongPress?.(message)} delayLongPress={280}>
+        <View style={[s.bubble, s.mine]}>
+          {message.isPinned && (
+            <View style={s.bubblePinnedBadge}>
+              <Ionicons name="pin" size={11} color="#FBBF24" />
+              <Text style={s.bubblePinnedText}>Pinned</Text>
+            </View>
+          )}
 
           {message.type === 'image' ? (
             <ImageMessage message={message} onOpen={onOpen} />
@@ -1377,48 +1812,17 @@ function MessageBubble({
             <Text style={s.message}>{message.content}</Text>
           )}
 
-          <Text style={s.meta}>
-            {new Date(message.timestamp).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </Text>
+          <View style={s.mineMetaRow}>
+            <Text style={s.metaMine}>
+              {new Date(message.timestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+            {showMeta && <Text style={s.checkMarks}> · ✓✓</Text>}
+          </View>
         </View>
-      </Animated.View>
-    );
-  }
-
-  // Outgoing Message (Right-aligned, vibrant violet, timestamp, checks)
-  return (
-    <Animated.View
-      style={[
-        s.outgoingMessageContainer,
-        { opacity, transform: [{ translateY: translate }] },
-      ]}
-    >
-      <View style={[s.bubble, s.mine]}>
-        {message.type === 'image' ? (
-          <ImageMessage message={message} onOpen={onOpen} />
-        ) : message.type === 'video' ? (
-          <VideoMessage message={message} onOpen={onOpen} />
-        ) : message.type === 'voice' ? (
-          <VoiceMessage message={message} />
-        ) : message.type === 'file' ? (
-          <FileMessage message={message} />
-        ) : (
-          <Text style={s.message}>{message.content}</Text>
-        )}
-
-        <View style={s.mineMetaRow}>
-          <Text style={s.metaMine}>
-            {new Date(message.timestamp).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </Text>
-          {showMeta && <Text style={s.checkMarks}> · ✓✓</Text>}
-        </View>
-      </View>
+      </Pressable>
     </Animated.View>
   );
 }
@@ -2150,4 +2554,121 @@ const s = StyleSheet.create({
   modalCancelText: { color: colors.muted, fontWeight: '700' },
   modalConfirm: { flex: 1, padding: 14, borderRadius: 10, alignItems: 'center', backgroundColor: colors.violet },
   modalConfirmText: { color: 'white', fontWeight: '800' },
+  searchBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#1E1833',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  searchBarInput: {
+    flex: 1,
+    color: 'white',
+    fontSize: 14,
+  },
+  pinnedBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#272013',
+    borderColor: '#785A18',
+    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  pinnedTitle: {
+    color: '#FBBF24',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  pinnedContent: {
+    color: '#FEF3C7',
+    fontSize: 12,
+    marginTop: 1,
+  },
+  replyingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1F1A35',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderColor: '#392C5E',
+  },
+  replyingTitle: {
+    color: colors.violetLight,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  replyingSnippet: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  actionSheetTitle: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  actionSheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface2,
+    padding: 14,
+    borderRadius: 12,
+  },
+  actionSheetText: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  modalCard: {
+    backgroundColor: '#19142B',
+    borderColor: '#36295C',
+    borderWidth: 1,
+    borderRadius: 20,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+  },
+  modalCloseBtn: {
+    backgroundColor: colors.surface,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  modalCloseBtnText: {
+    color: colors.muted,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  bubblePinnedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  bubblePinnedText: {
+    color: '#FBBF24',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  bubbleAiBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  bubbleAiText: {
+    color: '#38BDF8',
+    fontSize: 10,
+    fontWeight: '800',
+  },
 });

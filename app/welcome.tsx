@@ -28,6 +28,8 @@ export default function Welcome() {
           >
             <Text style={s.primaryText}>Continue with Google</Text>
           </Pressable>
+
+          <Text style={s.scempyyBadge}>Made by Scempyy</Text>
         </View>
       </SafeAreaView>
     </LinearGradient>
@@ -79,5 +81,14 @@ const s = StyleSheet.create({
     color: 'white',
     fontWeight: '800',
     fontSize: 16,
+  },
+  scempyyBadge: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginTop: 18,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });
