@@ -9,15 +9,19 @@ import {
   Modal,
   TextInput,
   Alert,
-  Image,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { Header, Card, Progress } from '@/src/components/ui';
+import { Avatar } from '@/src/components/Avatar';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { feedback } from '@/src/services/feedback';
+import { UpdatesService, UpdateCheckResult } from '@/src/services/updates';
+import { sendTestNotification } from '@/src/services/notifications';
 
 export default function Profile() {
   const {
@@ -40,10 +44,14 @@ export default function Profile() {
     changeJournalPin,
     resetJournalPin,
     lockJournal,
+    uploadUserAvatar,
+    removeUserAvatar,
+    uploadWorkspaceAvatar,
+    updateWorkspaceIdentity,
   } = useApp();
 
   const [activeModal, setActiveModal] = useState<
-    'account' | 'username' | 'security' | 'privacy' | 'workspace' | 'data' | null
+    'account' | 'username' | 'security' | 'privacy' | 'workspace' | 'data' | 'about' | null
   >(null);
 
   // Security PIN states
@@ -58,14 +66,22 @@ export default function Profile() {
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [usernameSuccess, setUsernameSuccess] = useState<string | null>(null);
 
-  // Avatar error fallback state
-  const [avatarImgError, setAvatarImgError] = useState(false);
+  const [avatarLoading, setAvatarLoading] = useState(false);
 
   // Workspace states
   const [joinCode, setJoinCode] = useState('');
   const [newTeamName, setNewTeamName] = useState('');
+  const [editWsName, setEditWsName] = useState('');
+  const [wsNameLoading, setWsNameLoading] = useState(false);
+  const [wsNameSuccess, setWsNameSuccess] = useState<string | null>(null);
+  const [wsAvatarLoading, setWsAvatarLoading] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+
+  // Notification and OTA Update states
+  const [testNotifLoading, setTestNotifLoading] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -178,10 +194,145 @@ export default function Profile() {
     }
   };
 
-  const isAvatarUrl = Boolean(
-    user.avatar && (user.avatar.startsWith('http://') || user.avatar.startsWith('https://'))
-  );
-  const initial = (user.name || user.username || 'E').charAt(0).toUpperCase();
+  const handleAvatarPress = () => {
+    feedback.tap(preferences.haptics);
+    const isCustomAvatar = Boolean(
+      user.avatar && (user.avatar.startsWith('http://') || user.avatar.startsWith('https://'))
+    );
+
+    const options: any[] = [
+      {
+        text: 'Choose from Gallery',
+        onPress: handlePickUserAvatar,
+      },
+    ];
+
+    if (isCustomAvatar) {
+      options.push({
+        text: 'Remove Photo',
+        style: 'destructive',
+        onPress: handleRemoveUserAvatar,
+      });
+    }
+
+    options.push({ text: 'Cancel', style: 'cancel' });
+
+    Alert.alert('Profile Picture', 'Update your personal avatar across Duo & Team', options);
+  };
+
+  const handlePickUserAvatar = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission required', 'Please grant photo library access to change your avatar.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!res.canceled && res.assets[0]) {
+        setAvatarLoading(true);
+        const uploaded = await uploadUserAvatar(res.assets[0].uri);
+        setAvatarLoading(false);
+        if (uploaded) {
+          feedback.success(preferences.haptics);
+          feedback.sound('success', preferences.sfx);
+        } else {
+          Alert.alert('Upload Failed', 'Could not upload avatar. Please try again.');
+        }
+      }
+    } catch (err) {
+      setAvatarLoading(false);
+      console.warn('[Profile] handlePickUserAvatar error:', err);
+    }
+  };
+
+  const handleRemoveUserAvatar = async () => {
+    setAvatarLoading(true);
+    await removeUserAvatar();
+    setAvatarLoading(false);
+    feedback.tap(preferences.haptics);
+  };
+
+  const handlePickWorkspaceAvatar = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission required', 'Please grant photo access.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!res.canceled && res.assets[0]) {
+        setWsAvatarLoading(true);
+        await uploadWorkspaceAvatar(res.assets[0].uri);
+        setWsAvatarLoading(false);
+        feedback.success(preferences.haptics);
+      }
+    } catch (err) {
+      setWsAvatarLoading(false);
+      console.warn('[Profile] handlePickWorkspaceAvatar error:', err);
+    }
+  };
+
+  const handleRemoveWorkspaceAvatar = async () => {
+    setWsAvatarLoading(true);
+    await updateWorkspaceIdentity(undefined, null);
+    setWsAvatarLoading(false);
+    feedback.tap(preferences.haptics);
+  };
+
+  const handleSaveWorkspaceName = async () => {
+    const trimmed = editWsName.trim();
+    if (!trimmed) return;
+    setWsNameLoading(true);
+    setWsNameSuccess(null);
+    const ok = await updateWorkspaceIdentity(trimmed);
+    setWsNameLoading(false);
+    if (ok) {
+      setWsNameSuccess('Workspace name updated!');
+      feedback.success(preferences.haptics);
+      setTimeout(() => setWsNameSuccess(null), 2000);
+    }
+  };
+
+  const handleTestNotification = async () => {
+    setTestNotifLoading(true);
+    feedback.tap(preferences.haptics);
+    const sent = await sendTestNotification();
+    setTestNotifLoading(false);
+    if (sent) {
+      feedback.sound('notification', preferences.sfx);
+      Alert.alert('🔔 Notification Sent', 'Check your device notification shade.');
+    } else {
+      Alert.alert(
+        'Permission Required',
+        'Notification permission was not granted. Please enable notifications for EvoRyz in device settings.'
+      );
+    }
+  };
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true);
+    feedback.tap(preferences.haptics);
+    const result = await UpdatesService.checkForUpdate();
+    setUpdateResult(result);
+    setCheckingUpdates(false);
+  };
+
+  const handleReloadApp = async () => {
+    feedback.tap(preferences.haptics);
+    await UpdatesService.reload();
+  };
 
   return (
     <ScrollView style={s.root} contentContainerStyle={s.content}>
@@ -189,18 +340,16 @@ export default function Profile() {
 
       {/* User Card */}
       <Card style={s.person}>
-        <View style={s.avatar}>
-          {isAvatarUrl && !avatarImgError ? (
-            <Image
-              source={{ uri: user.avatar }}
-              style={s.avatarImage}
-              resizeMode="cover"
-              onError={() => setAvatarImgError(true)}
-            />
-          ) : (
-            <Text style={s.avatarText}>{initial}</Text>
-          )}
-        </View>
+        <Pressable onPress={handleAvatarPress} style={s.avatarWrapper} disabled={avatarLoading}>
+          <Avatar uri={user.avatar} name={user.name} size={72} />
+          <View style={s.cameraBadge}>
+            {avatarLoading ? (
+              <ActivityIndicator size="small" color="white" />
+            ) : (
+              <Ionicons name="camera" size={14} color="white" />
+            )}
+          </View>
+        </Pressable>
         <Text style={s.name}>{user.name}</Text>
         <Text style={s.handle}>{user.email || `@${user.username}`}</Text>
         <View style={s.badgeRow}>
@@ -247,7 +396,7 @@ export default function Profile() {
       <View style={s.setting}>
         <View>
           <Text style={s.settingText}>Allow reminders</Text>
-          <Text style={s.settingSub}>Daily focus & recap prompts</Text>
+          <Text style={s.settingSub}>Focus & periodic prompts</Text>
         </View>
         <Switch
           value={notifications.enabled}
@@ -255,6 +404,32 @@ export default function Profile() {
           trackColor={{ true: colors.violet }}
         />
       </View>
+      <View style={s.setting}>
+        <View>
+          <Text style={s.settingText}>Daily recap notification</Text>
+          <Text style={s.settingSub}>2:00 AM summary of completed day</Text>
+        </View>
+        <Switch
+          value={notifications.recapReminder}
+          onValueChange={(recapReminder) => updateNotifications({ recapReminder })}
+          trackColor={{ true: colors.violet }}
+        />
+      </View>
+      <Pressable
+        style={s.setting}
+        onPress={handleTestNotification}
+        disabled={testNotifLoading}
+      >
+        <View>
+          <Text style={s.settingText}>Send test notification</Text>
+          <Text style={s.settingSub}>Trigger 🔔 EvoRyz Test Notification</Text>
+        </View>
+        {testNotifLoading ? (
+          <ActivityIndicator size="small" color={colors.violetLight} />
+        ) : (
+          <Ionicons name="notifications-outline" size={20} color={colors.violetLight} />
+        )}
+      </Pressable>
 
       {/* Preferences */}
       <Text style={s.section}>FEEDBACK & PRIVACY</Text>
@@ -333,7 +508,13 @@ export default function Profile() {
       </Pressable>
 
       {/* 4. Workspace */}
-      <Pressable style={s.setting} onPress={() => setActiveModal('workspace')}>
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          setEditWsName(workspace?.name || '');
+          setActiveModal('workspace');
+        }}
+      >
         <View>
           <Text style={s.settingText}>Workspace</Text>
           <Text style={s.settingSub}>
@@ -348,6 +529,15 @@ export default function Profile() {
         <View>
           <Text style={s.settingText}>Data & Cache</Text>
           <Text style={s.settingSub}>Local cache & sync state</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </Pressable>
+
+      {/* 6. About EvoRyz & Updates */}
+      <Pressable style={s.setting} onPress={() => setActiveModal('about')}>
+        <View>
+          <Text style={s.settingText}>About EvoRyz & Updates</Text>
+          <Text style={s.settingSub}>v1.0.0 · Over-the-air updates</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </Pressable>
@@ -648,10 +838,68 @@ export default function Profile() {
 
             {workspace ? (
               <View>
-                <View style={s.modalRow}>
-                  <Text style={s.modalLabel}>Workspace Name</Text>
-                  <Text style={s.modalVal}>{workspace.name}</Text>
+                {/* Workspace Identity Header */}
+                <View style={{ alignItems: 'center', marginVertical: 8 }}>
+                  <Pressable
+                    onPress={handlePickWorkspaceAvatar}
+                    style={s.avatarWrapper}
+                    disabled={wsAvatarLoading}
+                  >
+                    <Avatar uri={workspace.avatarUrl} name={workspace.name} size={64} isWorkspace />
+                    <View style={s.cameraBadge}>
+                      {wsAvatarLoading ? (
+                        <ActivityIndicator size="small" color="white" />
+                      ) : (
+                        <Ionicons name="camera" size={14} color="white" />
+                      )}
+                    </View>
+                  </Pressable>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+                    <Pressable
+                      style={s.pillButton}
+                      onPress={handlePickWorkspaceAvatar}
+                      disabled={wsAvatarLoading}
+                    >
+                      <Text style={s.pillButtonText}>Change Photo</Text>
+                    </Pressable>
+                    {workspace.avatarUrl ? (
+                      <Pressable
+                        style={[s.pillButton, { backgroundColor: '#38222A' }]}
+                        onPress={handleRemoveWorkspaceAvatar}
+                        disabled={wsAvatarLoading}
+                      >
+                        <Text style={[s.pillButtonText, { color: '#FCA5A5' }]}>Remove</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </View>
+
+                {/* Rename Workspace Input */}
+                <Text style={s.inputLabel}>WORKSPACE NAME</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                  <TextInput
+                    value={editWsName}
+                    onChangeText={setEditWsName}
+                    placeholder="Workspace name"
+                    placeholderTextColor={colors.muted}
+                    style={[s.modalInput, { flex: 1 }]}
+                  />
+                  <Pressable
+                    style={[
+                      s.btnPrimary,
+                      { marginTop: 0, paddingHorizontal: 16 },
+                      (!editWsName.trim() || editWsName.trim() === workspace.name || wsNameLoading) && {
+                        opacity: 0.5,
+                      },
+                    ]}
+                    disabled={!editWsName.trim() || editWsName.trim() === workspace.name || wsNameLoading}
+                    onPress={handleSaveWorkspaceName}
+                  >
+                    <Text style={s.btnPrimaryText}>{wsNameLoading ? '...' : 'Save'}</Text>
+                  </Pressable>
+                </View>
+                {wsNameSuccess && <Text style={s.modalSuccess}>{wsNameSuccess}</Text>}
+
                 <View style={s.modalRow}>
                   <Text style={s.modalLabel}>Mode</Text>
                   <Text style={s.modalVal}>{workspace.mode.toUpperCase()}</Text>
@@ -820,6 +1068,99 @@ export default function Profile() {
           </View>
         </View>
       </Modal>
+
+      {/* 6. About EvoRyz & OTA Updates Modal */}
+      <Modal visible={activeModal === 'about'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => {
+                  setActiveModal(null);
+                  setUpdateResult(null);
+                }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>About EvoRyz</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
+            <View style={{ alignItems: 'center', marginBottom: 16 }}>
+              <View style={[s.avatarWrapper, { width: 56, height: 56, borderRadius: 28, backgroundColor: '#211B35', borderWidth: 1, borderColor: '#3E2F5E' }]}>
+                <Ionicons name="sparkles" size={26} color={colors.violetLight} />
+              </View>
+              <Text style={{ color: 'white', fontWeight: '800', fontSize: 18, marginTop: 8 }}>EvoRyz Production</Text>
+              <Text style={{ color: colors.muted, fontSize: 12 }}>v1.0.0 · Build 1</Text>
+            </View>
+
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Runtime Version</Text>
+              <Text style={s.modalVal}>{UpdatesService.getAppInfo().runtimeVersion}</Text>
+            </View>
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Release Channel</Text>
+              <Text style={s.modalVal}>{UpdatesService.getAppInfo().channel}</Text>
+            </View>
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Build Distribution</Text>
+              <Text style={s.modalVal}>
+                {UpdatesService.getAppInfo().isEmbeddedLaunch ? 'Embedded Release APK' : 'Over-The-Air Update'}
+              </Text>
+            </View>
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Update ID</Text>
+              <Text style={[s.modalVal, { fontSize: 11 }]}>
+                {UpdatesService.getAppInfo().updateId.slice(0, 16)}
+              </Text>
+            </View>
+
+            <Text style={[s.modalBody, { fontSize: 12, marginTop: 12 }]}>
+              Over-The-Air (OTA) updates deliver immediate JavaScript & asset fixes without requiring an APK reinstallation. Native library additions still use preview APK builds.
+            </Text>
+
+            {updateResult && (
+              <View style={{ marginVertical: 8 }}>
+                {updateResult.isAvailable ? (
+                  <View style={{ backgroundColor: '#1E2D24', padding: 12, borderRadius: 10 }}>
+                    <Text style={{ color: colors.green, fontWeight: '800' }}>New Update Ready!</Text>
+                    <Text style={{ color: '#D1FAE5', fontSize: 12, marginTop: 2 }}>
+                      A newer update was downloaded and is ready to apply.
+                    </Text>
+                    <Pressable
+                      style={[s.btnPrimary, { backgroundColor: colors.green, marginTop: 10 }]}
+                      onPress={handleReloadApp}
+                    >
+                      <Text style={s.btnPrimaryText}>Restart & Apply Update</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Text style={[s.modalSuccess, { color: colors.violetLight, textAlign: 'center' }]}>
+                    {updateResult.error || 'You are running the latest available update.'}
+                  </Text>
+                )}
+              </View>
+            )}
+
+            <Pressable
+              style={[s.btnPrimary, { marginTop: 12 }]}
+              onPress={handleCheckUpdates}
+              disabled={checkingUpdates}
+            >
+              {checkingUpdates ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <Text style={s.btnPrimaryText}>Check for Updates</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -828,6 +1169,24 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 18, paddingBottom: 60 },
   person: { alignItems: 'center' },
+  avatarWrapper: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: colors.violet,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#121019',
+  },
   avatar: {
     width: 72,
     height: 72,

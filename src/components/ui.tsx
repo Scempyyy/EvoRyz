@@ -241,3 +241,6 @@ const s = StyleSheet.create({
   create: { backgroundColor: colors.violet, padding: 16, borderRadius: 13, alignItems: 'center', marginTop: 22 },
   createText: { color: 'white', fontWeight: '800' },
 });
+
+export { Avatar } from './Avatar';
+

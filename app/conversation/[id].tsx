@@ -22,6 +22,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import { useResolvedMediaUrl } from '@/src/services/mediaResolver';
+import { Avatar } from '@/src/components/Avatar';
 import { Ionicons } from '@expo/vector-icons';
 import {
   RecordingPresets,
@@ -899,39 +900,60 @@ function WorkspaceChatComponent() {
           accessibilityLabel="Go back"
           hitSlop={12}
           onPress={handleBack}
-          style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 8 }}
+          style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 6 }}
         >
           <Ionicons name="chevron-back" size={26} color="white" />
-          <Text style={{ color: 'white', fontWeight: '700', fontSize: 16 }}>Back</Text>
         </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text style={s.title}>{title}</Text>
-          {workspace ? (
-            <Pressable
-              hitSlop={8}
-              disabled={chatConnectionStatus === 'CONNECTED' || chatConnectionStatus === 'CONNECTING'}
-              onPress={() => {
-                feedback.tap();
-                retryChatConnection();
-              }}
-            >
-              <Text style={s.sub}>
-                {workspace.members.length > 0 ? `${workspace.members.length} member${workspace.members.length === 1 ? '' : 's'} · ` : ''}
-                {chatConnectionStatus === 'CONNECTED'
-                  ? 'Live Supabase Realtime'
-                  : chatConnectionStatus === 'CONNECTING'
-                  ? 'Connecting Realtime…'
-                  : chatConnectionStatus === 'ERROR'
-                  ? 'Connection issue · Tap to retry'
-                  : 'Offline · Tap to reconnect'}
-              </Text>
-            </Pressable>
-          ) : (
-            <Text style={s.sub}>
-              Connect Duo or Team to sync shared chat
+
+        <Pressable
+          style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10 }}
+          onPress={() => router.push('/profile')}
+        >
+          <Avatar
+            uri={workspace?.avatarUrl}
+            name={workspace?.name || 'Workspace'}
+            isWorkspace
+            size={40}
+          />
+          <View style={{ flex: 1 }}>
+            <Text style={s.title} numberOfLines={1}>
+              {title}
             </Text>
-          )}
-        </View>
+            {workspace ? (
+              <Pressable
+                hitSlop={8}
+                disabled={chatConnectionStatus === 'CONNECTED' || chatConnectionStatus === 'CONNECTING'}
+                onPress={() => {
+                  feedback.tap();
+                  retryChatConnection();
+                }}
+              >
+                <Text style={s.sub}>
+                  {workspace.members.length > 0 ? `${workspace.members.length} members · ` : ''}
+                  {chatConnectionStatus === 'CONNECTED'
+                    ? 'Live Realtime'
+                    : chatConnectionStatus === 'CONNECTING'
+                    ? 'Connecting…'
+                    : chatConnectionStatus === 'ERROR'
+                    ? 'Connection issue'
+                    : 'Offline'}
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={s.sub}>
+                Connect Duo or Team to sync shared chat
+              </Text>
+            )}
+          </View>
+        </Pressable>
+
+        <Pressable
+          hitSlop={10}
+          onPress={() => router.push('/profile')}
+          style={{ paddingHorizontal: 6, paddingVertical: 4 }}
+        >
+          <Ionicons name="ellipsis-vertical" size={20} color={colors.muted} />
+        </Pressable>
       </View>
 
       {workspace?.mode === 'duo' && workspace.members.length === 1 ? (
@@ -971,16 +993,38 @@ function WorkspaceChatComponent() {
             </Text>
           </View>
         ) : (
-          messages.map((m, index) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              mine={m.senderId === user.id || m.senderId === 'me'}
-              showMeta={true}
-              delay={Math.min(index * 20, 150)}
-              onOpen={setViewer}
-            />
-          ))
+          messages.map((m, index) => {
+            const isMine = m.senderId === user.id || m.senderId === 'me';
+            const prevMsg = index > 0 ? messages[index - 1] : null;
+            const isSameSenderAsPrev =
+              prevMsg &&
+              prevMsg.type !== 'system' &&
+              m.type !== 'system' &&
+              prevMsg.senderId === m.senderId;
+
+            const timeDiffMs = prevMsg
+              ? Math.abs(new Date(m.timestamp).getTime() - new Date(prevMsg.timestamp).getTime())
+              : Infinity;
+            const isGrouped = isSameSenderAsPrev && timeDiffMs < 5 * 60 * 1000;
+
+            const senderMember = workspace?.members?.find((mem) => mem.id === m.senderId);
+            const senderName = m.senderName || senderMember?.name || (isMine ? 'You' : 'Member');
+            const senderAvatar = senderMember?.avatar;
+
+            return (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                mine={isMine}
+                showMeta={true}
+                delay={Math.min(index * 15, 120)}
+                onOpen={setViewer}
+                isGrouped={Boolean(isGrouped)}
+                senderName={senderName}
+                senderAvatar={senderAvatar}
+              />
+            );
+          })
         )}
       </ScrollView>
 
@@ -1261,12 +1305,18 @@ function MessageBubble({
   showMeta,
   delay,
   onOpen,
+  isGrouped,
+  senderName,
+  senderAvatar,
 }: {
   message: Message;
   mine: boolean;
   showMeta: boolean;
   delay: number;
   onOpen: (m: Message) => void;
+  isGrouped?: boolean;
+  senderName?: string;
+  senderAvatar?: string;
 }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const translate = useRef(new Animated.Value(10)).current;
@@ -1284,37 +1334,91 @@ function MessageBubble({
     ]).start();
   }, [delay, opacity, translate]);
 
+  // System Message (Centered pill for join/leave events)
+  if (message.type === 'system') {
+    return (
+      <View style={s.systemMessageRow}>
+        <View style={s.systemMessagePill}>
+          <Text style={s.systemMessageText}>──── {message.content} ────</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Incoming Message with Avatar & Consecutive Grouping
+  if (!mine) {
+    return (
+      <Animated.View
+        style={[
+          s.incomingMessageContainer,
+          isGrouped && s.groupedIncoming,
+          { opacity, transform: [{ translateY: translate }] },
+        ]}
+      >
+        {!isGrouped ? (
+          <Avatar uri={senderAvatar} name={senderName} size={30} style={s.incomingAvatar} />
+        ) : (
+          <View style={s.avatarPlaceholder} />
+        )}
+        <View style={[s.bubble, s.theirs]}>
+          {!isGrouped && senderName ? (
+            <Text style={s.senderLabel}>{senderName}</Text>
+          ) : null}
+
+          {message.type === 'image' ? (
+            <ImageMessage message={message} onOpen={onOpen} />
+          ) : message.type === 'video' ? (
+            <VideoMessage message={message} onOpen={onOpen} />
+          ) : message.type === 'voice' ? (
+            <VoiceMessage message={message} />
+          ) : message.type === 'file' ? (
+            <FileMessage message={message} />
+          ) : (
+            <Text style={s.message}>{message.content}</Text>
+          )}
+
+          <Text style={s.meta}>
+            {new Date(message.timestamp).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </Text>
+        </View>
+      </Animated.View>
+    );
+  }
+
+  // Outgoing Message (Right-aligned, vibrant violet, timestamp, checks)
   return (
     <Animated.View
       style={[
-        s.bubble,
-        mine ? s.mine : s.theirs,
+        s.outgoingMessageContainer,
         { opacity, transform: [{ translateY: translate }] },
       ]}
     >
-      {!mine && message.senderName ? (
-        <Text style={s.senderLabel}>{message.senderName}</Text>
-      ) : null}
+      <View style={[s.bubble, s.mine]}>
+        {message.type === 'image' ? (
+          <ImageMessage message={message} onOpen={onOpen} />
+        ) : message.type === 'video' ? (
+          <VideoMessage message={message} onOpen={onOpen} />
+        ) : message.type === 'voice' ? (
+          <VoiceMessage message={message} />
+        ) : message.type === 'file' ? (
+          <FileMessage message={message} />
+        ) : (
+          <Text style={s.message}>{message.content}</Text>
+        )}
 
-      {message.type === 'image' ? (
-        <ImageMessage message={message} onOpen={onOpen} />
-      ) : message.type === 'video' ? (
-        <VideoMessage message={message} onOpen={onOpen} />
-      ) : message.type === 'voice' ? (
-        <VoiceMessage message={message} />
-      ) : message.type === 'file' ? (
-        <FileMessage message={message} />
-      ) : (
-        <Text style={s.message}>{message.content}</Text>
-      )}
-
-      <Text style={s.meta}>
-        {new Date(message.timestamp).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        })}
-        {showMeta && mine ? ' · ✓✓' : ''}
-      </Text>
+        <View style={s.mineMetaRow}>
+          <Text style={s.metaMine}>
+            {new Date(message.timestamp).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </Text>
+          {showMeta && <Text style={s.checkMarks}> · ✓✓</Text>}
+        </View>
+      </View>
     </Animated.View>
   );
 }
@@ -1737,9 +1841,77 @@ const s = StyleSheet.create({
   list: { flex: 1 },
   messages: { padding: 16, gap: 9, flexGrow: 1 },
   journalContent: { padding: 16, gap: 12, flexGrow: 1 },
-  bubble: { maxWidth: '84%', padding: 12, borderRadius: 16 },
-  mine: { backgroundColor: colors.violet, alignSelf: 'flex-end', borderBottomRightRadius: 4 },
-  theirs: { backgroundColor: colors.surface2, alignSelf: 'flex-start', borderBottomLeftRadius: 4 },
+  bubble: { maxWidth: '82%', padding: 12, borderRadius: 16 },
+  mine: {
+    backgroundColor: '#7C3AED',
+    alignSelf: 'flex-end',
+    borderBottomRightRadius: 4,
+    borderTopRightRadius: 16,
+    borderTopLeftRadius: 16,
+    borderBottomLeftRadius: 16,
+  },
+  theirs: {
+    backgroundColor: '#1E1B29',
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: 4,
+    borderTopRightRadius: 16,
+    borderTopLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    borderWidth: 1,
+    borderColor: '#2D283E',
+  },
+  incomingMessageContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginVertical: 3,
+    maxWidth: '85%',
+  },
+  groupedIncoming: {
+    marginTop: 1,
+    marginBottom: 2,
+  },
+  incomingAvatar: {
+    marginRight: 8,
+    marginBottom: 4,
+  },
+  avatarPlaceholder: {
+    width: 30,
+    marginRight: 8,
+  },
+  outgoingMessageContainer: {
+    alignSelf: 'flex-end',
+    marginVertical: 3,
+    maxWidth: '85%',
+  },
+  mineMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 4,
+    gap: 4,
+  },
+  metaMine: { color: '#E9D5FF', fontSize: 10 },
+  checkMarks: { color: '#EDE9FE', fontSize: 10, fontWeight: '800' },
+  systemMessageRow: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 12,
+    paddingHorizontal: 20,
+  },
+  systemMessagePill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  systemMessageText: {
+    color: '#D8B4FE',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
   senderLabel: { color: colors.violetLight, fontSize: 11, fontWeight: '700', marginBottom: 3 },
   message: { color: 'white', fontSize: 15, lineHeight: 21 },
   meta: { color: '#d8d0ff', fontSize: 10, marginTop: 5 },

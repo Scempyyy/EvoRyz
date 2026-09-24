@@ -44,6 +44,7 @@ export interface Workspace {
   name: string;
   inviteCode: string;
   members: WorkspaceMember[];
+  avatarUrl?: string;
 }
 
 export interface DailyTask {
@@ -140,10 +141,12 @@ export interface Meal {
   carbs: number;
   fat: number;
   fiber: number;
+  portion?: string;
   notes?: string;
   photoUri?: string;
   visibility: Visibility;
   date: string;
+  aiEstimated?: boolean;
 }
 
 export interface ActivityEvent {

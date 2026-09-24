@@ -422,6 +422,29 @@ export class SupabaseRepository {
     }
   }
 
+  async updateMeal(meal: Meal): Promise<void> {
+    if (!isUUID(meal.id)) return;
+    try {
+      await supabase
+        .from('meals')
+        .update({
+          name: meal.name,
+          type: meal.type,
+          calories: meal.calories,
+          protein: meal.protein,
+          carbs: meal.carbs,
+          fat: meal.fat,
+          fiber: meal.fiber,
+          notes: meal.notes || null,
+          photo_uri: meal.photoUri || null,
+          visibility: meal.visibility,
+        })
+        .eq('id', meal.id);
+    } catch (err) {
+      console.warn('[SupabaseRepository] updateMeal error:', err);
+    }
+  }
+
   // --------------------------------------------------------------------------
   // WORKSPACE CHAT MESSAGES & REALTIME
   // --------------------------------------------------------------------------
@@ -577,7 +600,7 @@ export class SupabaseRepository {
     const msgId = ensureUUID(message.id);
     const workspaceId = message.workspaceId && isUUID(message.workspaceId) ? message.workspaceId : null;
     const msgType = message.type || 'text';
-    const validDbTypes = ['text', 'image', 'video', 'file', 'voice'];
+    const validDbTypes = ['text', 'image', 'video', 'file', 'voice', 'system'];
     const dbMessageType = validDbTypes.includes(msgType) ? msgType : 'text';
     try {
       let finalUri = message.uri || null;
@@ -1025,7 +1048,7 @@ export class SupabaseRepository {
       // 2. Query workspace directly
       const { data: wsRow, error: wsErr } = await supabase
         .from('workspaces')
-        .select('id, name, mode, invite_code')
+        .select('id, name, mode, invite_code, avatar_url')
         .eq('id', wsId)
         .maybeSingle();
 
@@ -1043,6 +1066,7 @@ export class SupabaseRepository {
         mode: wsRow.mode as 'duo' | 'team',
         inviteCode: wsRow.invite_code,
         members,
+        avatarUrl: wsRow.avatar_url ?? undefined,
       };
     } catch {
       return null;
@@ -1189,6 +1213,127 @@ export class SupabaseRepository {
       return !delErr;
     } catch (err) {
       console.warn('[SupabaseRepository] leaveWorkspace error:', err);
+      return false;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // AVATARS & WORKSPACE IDENTITY
+  // --------------------------------------------------------------------------
+  async uploadUserAvatar(userId: string, localUri: string): Promise<string | null> {
+    if (!isUUID(userId)) return null;
+    try {
+      let ext = 'jpg';
+      const match = localUri.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+      if (match && match[1]) {
+        ext = match[1].toLowerCase();
+      }
+      const storagePath = `users/${userId}_${Date.now()}.${ext}`;
+      const res = await fetch(localUri);
+      const blob = await res.blob();
+
+      const { data, error } = await supabase.storage
+        .from('avatars')
+        .upload(storagePath, blob, {
+          contentType: `image/${ext === 'png' ? 'png' : ext === 'webp' ? 'webp' : 'jpeg'}`,
+          upsert: true,
+        });
+
+      if (error) {
+        console.warn('[SupabaseRepository] uploadUserAvatar error:', error.message);
+        return null;
+      }
+
+      const { data: signedData } = await supabase.storage
+        .from('avatars')
+        .createSignedUrl(data?.path || storagePath, 86400 * 7);
+
+      const avatarUrl = signedData?.signedUrl || null;
+      if (avatarUrl) {
+        await supabase.from('profiles').update({ avatar_url: avatarUrl }).eq('id', userId);
+      }
+      return avatarUrl;
+    } catch (err) {
+      console.warn('[SupabaseRepository] uploadUserAvatar exception:', err);
+      return null;
+    }
+  }
+
+  async removeUserAvatar(userId: string): Promise<boolean> {
+    if (!isUUID(userId)) return false;
+    try {
+      const { error } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', userId);
+      return !error;
+    } catch (err) {
+      console.warn('[SupabaseRepository] removeUserAvatar error:', err);
+      return false;
+    }
+  }
+
+  async uploadWorkspaceAvatar(workspaceId: string, localUri: string): Promise<string | null> {
+    if (!isUUID(workspaceId)) return null;
+    try {
+      let ext = 'jpg';
+      const match = localUri.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+      if (match && match[1]) {
+        ext = match[1].toLowerCase();
+      }
+      const storagePath = `workspaces/${workspaceId}_${Date.now()}.${ext}`;
+      const res = await fetch(localUri);
+      const blob = await res.blob();
+
+      const { data, error } = await supabase.storage
+        .from('avatars')
+        .upload(storagePath, blob, {
+          contentType: `image/${ext === 'png' ? 'png' : ext === 'webp' ? 'webp' : 'jpeg'}`,
+          upsert: true,
+        });
+
+      if (error) {
+        console.warn('[SupabaseRepository] uploadWorkspaceAvatar error:', error.message);
+        return null;
+      }
+
+      const { data: signedData } = await supabase.storage
+        .from('avatars')
+        .createSignedUrl(data?.path || storagePath, 86400 * 7);
+
+      return signedData?.signedUrl || null;
+    } catch (err) {
+      console.warn('[SupabaseRepository] uploadWorkspaceAvatar exception:', err);
+      return null;
+    }
+  }
+
+  async updateWorkspaceIdentity(
+    workspaceId: string,
+    name?: string,
+    avatarUrl?: string | null
+  ): Promise<boolean> {
+    if (!isUUID(workspaceId)) return false;
+    try {
+      // 1. Try secure RPC function
+      const { error: rpcErr } = await supabase.rpc('update_workspace_identity', {
+        target_workspace_id: workspaceId,
+        new_name: name || null,
+        new_avatar_url: avatarUrl === undefined ? null : avatarUrl,
+      });
+
+      if (!rpcErr) return true;
+
+      // 2. Direct fallback
+      const updateData: Record<string, unknown> = {};
+      if (name !== undefined) updateData.name = name;
+      if (avatarUrl !== undefined) updateData.avatar_url = avatarUrl;
+
+      const { error: directErr } = await supabase
+        .from('workspaces')
+        .update(updateData)
+        .eq('id', workspaceId);
+
+      return !directErr;
+    } catch (err) {
+      console.warn('[SupabaseRepository] updateWorkspaceIdentity error:', err);
       return false;
     }
   }

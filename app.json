@@ -20,6 +20,12 @@
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ]
     },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/238409a4-bc1e-44ac-98b3-23a05b34ff0c"
+    },
     "plugins": [
       "expo-router",
       "expo-image-picker",
@@ -29,7 +35,14 @@
           "microphonePermission": "Allow EvoRyz to record voice notes."
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#7C3AED"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

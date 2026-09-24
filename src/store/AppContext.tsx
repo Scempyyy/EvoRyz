@@ -21,7 +21,11 @@ import {
 import { evoryzDay } from '@/src/services/evoryzDay';
 import { journalCrypto, JournalSecurityConfig, EncryptedPayload } from '@/src/services/encryption';
 import { completionPercent, sharedPercent } from '@/src/services/recaps';
-import { localNotificationScheduler } from '@/src/services/notifications';
+import {
+  localNotificationScheduler,
+  sendPeerMessageNotification,
+  triggerDailyRecapNotification,
+} from '@/src/services/notifications';
 import { feedback } from '@/src/services/feedback';
 import { sfx } from '@/src/services/sfx';
 import { authService } from '@/src/services/auth';
@@ -169,7 +173,12 @@ type Ctx = State & {
     >
   ) => void;
   addMeal: (meal: Omit<Meal, 'id' | 'ownerId' | 'date' | 'workspaceId'>) => void;
+  updateMeal: (meal: Meal) => void;
   deleteMeal: (id: string) => void;
+  uploadUserAvatar: (localUri: string) => Promise<string | null>;
+  removeUserAvatar: () => Promise<boolean>;
+  uploadWorkspaceAvatar: (localUri: string) => Promise<string | null>;
+  updateWorkspaceIdentity: (name?: string, avatarUrl?: string | null) => Promise<boolean>;
   dailyRecap: () => DailySummary;
   // Journal Security & Content Methods
   unlockJournal: (pin: string) => Promise<{ success: boolean; error?: string }>;
@@ -196,6 +205,25 @@ function rollover(state: State): State {
     you: completionPercent(state.tasks),
     shared: state.workspace ? sharedPercent(state.tasks) : undefined,
   };
+
+  if (state.user?.settings?.notifications?.recapReminder) {
+    const taskPct = completionPercent(state.tasks);
+    const habitsCompleted = state.habits.filter((h) => h.completedToday).length;
+    const habitPct = state.habits.length > 0 ? Math.round((habitsCompleted / state.habits.length) * 100) : 0;
+    const overallPct = Math.round(
+      (taskPct + habitPct) / (state.habits.length > 0 && state.tasks.length > 0 ? 2 : 1)
+    );
+
+    void triggerDailyRecapNotification({
+      day: state.activeDay,
+      tasksCompleted: state.tasks.filter((t) => t.completed).length,
+      totalTasks: state.tasks.length,
+      habitsCompleted,
+      totalHabits: state.habits.length,
+      mealsCount: state.meals.length,
+      overallPercent: overallPct,
+    });
+  }
 
   return {
     ...state,
@@ -346,7 +374,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Fetch cloud data
     try {
       const today = evoryzDay();
-      const [dbTasks, dbHabits, dbGoals, dbMeals, dbJournal, dbSecurity, dbWorkspace] = await Promise.all([
+      const [dbTasks, dbHabits, dbGoals, dbMeals, dbJournal, dbSecurity, dbWorkspace, dbProfile] = await Promise.all([
         supabaseRepo.fetchTasks(uid, today),
         supabaseRepo.fetchHabits(uid),
         supabaseRepo.fetchGoals(uid),
@@ -354,6 +382,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         supabaseRepo.fetchJournalEntries(uid),
         supabaseRepo.fetchJournalSecurity(uid),
         supabaseRepo.fetchUserWorkspace(uid),
+        supabaseRepo.getProfile(uid),
       ]);
 
       setState((prev) => {
@@ -370,7 +399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           } else {
             resolvedWorkspace = {
               ...dbWorkspace,
-              members: [{ id: uid, name: fullName || 'You', avatar: avatar || 'Y' }],
+              members: [{ id: uid, name: fullName || 'You', avatar: dbProfile?.avatar || avatar || 'Y' }],
             };
           }
         } else if (dbWorkspace === null) {
@@ -382,8 +411,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        const resolvedUserAvatar = dbProfile?.avatar || prev.user.avatar || avatar;
+
         return {
           ...prev,
+          user: {
+            ...prev.user,
+            avatar: resolvedUserAvatar,
+          },
           mode: resolvedMode,
           tasks: dbTasks.length ? dbTasks : prev.tasks,
           habits: dbHabits.length ? dbHabits : prev.habits,
@@ -456,6 +491,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const isFromMe = newMsg.senderId === (session?.user?.id || state.user.id);
         if (!isFromMe) {
           feedback.sound('messageReceived', state.user.settings.preferences.sfx);
+          if (newMsg.type !== 'system' && state.user.settings.notifications.enabled) {
+            const senderMember = state.workspace?.members?.find((m) => m.id === newMsg.senderId);
+            const senderName = newMsg.senderName || senderMember?.name || 'Teammate';
+            void sendPeerMessageNotification({
+              messageId: newMsg.id,
+              senderName,
+              messageType: newMsg.type,
+            });
+          }
         }
         setState((prev) => {
           if (prev.messages.some((m) => m.id === newMsg.id)) return prev;
@@ -487,11 +531,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [
     state.workspace?.id,
+    state.workspace?.members,
     session?.access_token,
     session?.user?.id,
     chatRetryTrigger,
     state.user.id,
     state.user.settings.preferences.sfx,
+    state.user.settings.notifications.enabled,
   ]);
 
   // 5. Reconnect Realtime and refresh state when app returns to foreground
@@ -678,6 +724,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
             workspace: res.workspace,
             hasCompletedSetup: true,
           }));
+
+          // Send system message indicating user joined the team
+          const joinContent = `${state.user.name || 'A teammate'} joined the team`;
+          const joinMsg: Message = {
+            id: generateUUID(),
+            workspaceId: res.workspace.id,
+            conversationId: 'workspace',
+            senderId: state.user.id,
+            type: 'system',
+            content: joinContent,
+            timestamp: new Date().toISOString(),
+            status: 'sent',
+          };
+          void supabaseRepo.insertMessage(joinMsg);
+
           void supabaseRepo.fetchMessages('workspace', res.workspace.id).then((msgs) => {
             if (msgs.length) {
               update((p) => ({ ...p, messages: msgs }));
@@ -995,6 +1056,73 @@ export function AppProvider({ children }: { children: ReactNode }) {
           void supabaseRepo.deleteMeal(mealId);
           return { ...previous, meals: previous.meals.filter((m) => m.id !== mealId) };
         }),
+
+      updateMeal: (meal) =>
+        update((previous) => {
+          void supabaseRepo.updateMeal(meal);
+          return {
+            ...previous,
+            meals: previous.meals.map((m) => (m.id === meal.id ? meal : m)),
+          };
+        }),
+
+      uploadUserAvatar: async (localUri: string) => {
+        const uid = session?.user?.id || state.user.id;
+        const url = await supabaseRepo.uploadUserAvatar(uid, localUri);
+        if (url) {
+          update((p) => ({
+            ...p,
+            user: { ...p.user, avatar: url },
+          }));
+        }
+        return url;
+      },
+
+      removeUserAvatar: async () => {
+        const uid = session?.user?.id || state.user.id;
+        const ok = await supabaseRepo.removeUserAvatar(uid);
+        if (ok) {
+          const fallback = state.user.name?.charAt(0)?.toUpperCase() || 'U';
+          update((p) => ({
+            ...p,
+            user: { ...p.user, avatar: fallback },
+          }));
+        }
+        return ok;
+      },
+
+      uploadWorkspaceAvatar: async (localUri: string) => {
+        const wsId = state.workspace?.id;
+        if (!wsId) return null;
+        const url = await supabaseRepo.uploadWorkspaceAvatar(wsId, localUri);
+        if (url) {
+          await supabaseRepo.updateWorkspaceIdentity(wsId, undefined, url);
+          update((p) => ({
+            ...p,
+            workspace: p.workspace ? { ...p.workspace, avatarUrl: url } : undefined,
+          }));
+        }
+        return url;
+      },
+
+      updateWorkspaceIdentity: async (name?: string, avatarUrl?: string | null) => {
+        const wsId = state.workspace?.id;
+        if (!wsId) return false;
+        const ok = await supabaseRepo.updateWorkspaceIdentity(wsId, name, avatarUrl);
+        if (ok) {
+          update((p) => ({
+            ...p,
+            workspace: p.workspace
+              ? {
+                  ...p.workspace,
+                  name: name ?? p.workspace.name,
+                  avatarUrl: avatarUrl === undefined ? p.workspace.avatarUrl : (avatarUrl ?? undefined),
+                }
+              : undefined,
+          }));
+        }
+        return ok;
+      },
 
       dailyRecap: () => ({
         date: state.activeDay,
