@@ -67,53 +67,88 @@ serve(async (req) => {
       ];
 
       // Try known available models with automatic fallback
+      // Primary model: gemini-3.6-flash, with safe modern fallbacks
       const candidateModels = [
         "gemini-3.6-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-pro",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash",
+        "gemini-flash-latest",
       ];
       let geminiSuccess = false;
       let lastErrText = "";
 
       for (const modelName of candidateModels) {
-        try {
-          const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
-          const res = await fetch(geminiUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              system_instruction: { parts: [{ text: systemInstruction }] },
-              contents,
-              generationConfig: { temperature: 0.7, maxOutputTokens: 600 },
-            }),
-          });
+        const attempts = modelName === "gemini-3.6-flash" ? 2 : 1;
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          try {
+            if (attempt > 0) {
+              // Short backoff on transient spikes (503 / 429)
+              await new Promise((resolve) => setTimeout(resolve, 800));
+            }
 
-          if (res.ok) {
-            const data = await res.json();
-            replyText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "No response generated.";
-            geminiSuccess = true;
-            break;
-          } else {
-            lastErrText = await res.text();
-            console.warn(`[evoryz-ai] Model ${modelName} returned ${res.status}:`, lastErrText);
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+            const res = await fetch(geminiUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                contents,
+                generationConfig: { temperature: 0.7, maxOutputTokens: 600 },
+              }),
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              replyText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "No response generated.";
+              geminiSuccess = true;
+              break;
+            } else {
+              lastErrText = await res.text();
+              console.warn(`[evoryz-ai] Model ${modelName} (attempt ${attempt + 1}) returned ${res.status}:`, lastErrText);
+              // Only retry on transient server errors (503 / 429)
+              if (res.status !== 503 && res.status !== 429) {
+                break;
+              }
+            }
+          } catch (modelErr) {
+            lastErrText = String(modelErr);
+            console.warn(`[evoryz-ai] Model ${modelName} fetch error:`, modelErr);
           }
-        } catch (modelErr) {
-          lastErrText = String(modelErr);
+        }
+
+        if (geminiSuccess) {
+          break;
         }
       }
 
       if (!geminiSuccess) {
-        // Query ListModels to find any available generateContent model
+        // Safe ListModels query for active modern text generation models
         try {
           const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`);
           if (listRes.ok) {
             const listData = await listRes.json();
-            const supported = listData.models?.find((m: any) =>
-              Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")
-            );
+            const supported = listData.models?.find((m: any) => {
+              if (!Array.isArray(m.supportedGenerationMethods) || !m.supportedGenerationMethods.includes("generateContent")) {
+                return false;
+              }
+              const name: string = m.name || "";
+              // Exclude legacy deprecated models and non-text modalities
+              if (
+                name.includes("2.5") ||
+                name.includes("2.0") ||
+                name.includes("1.5") ||
+                name.includes("pro") ||
+                name.includes("tts") ||
+                name.includes("image") ||
+                name.includes("robotics") ||
+                name.includes("computer-use") ||
+                name.includes("preview-")
+              ) {
+                return false;
+              }
+              return name.startsWith("models/gemini-3") || name.startsWith("models/gemini-flash");
+            });
+
             if (supported?.name) {
               const dynUrl = `https://generativelanguage.googleapis.com/v1beta/${supported.name}:generateContent?key=${geminiKey}`;
               const dynRes = await fetch(dynUrl, {
@@ -130,6 +165,7 @@ serve(async (req) => {
                 geminiSuccess = true;
               } else {
                 lastErrText = await dynRes.text();
+                console.warn(`[evoryz-ai] Dynamic fallback model ${supported.name} returned ${dynRes.status}:`, lastErrText);
               }
             }
           }
@@ -139,7 +175,11 @@ serve(async (req) => {
       }
 
       if (!geminiSuccess) {
-        throw new Error(`Gemini API error: ${lastErrText}`);
+        console.error("[evoryz-ai] All Gemini model attempts failed. Last error:", lastErrText);
+        return new Response(
+          JSON.stringify({ error: "EvoRyz AI is temporarily unavailable. Please try again." }),
+          { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
     } else if (groqKey) {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -198,9 +238,13 @@ serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    return new Response(JSON.stringify({ error: (error as Error).message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    console.error("[evoryz-ai] Edge function failure:", error);
+    return new Response(
+      JSON.stringify({ error: "EvoRyz AI is temporarily unavailable. Please try again." }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });

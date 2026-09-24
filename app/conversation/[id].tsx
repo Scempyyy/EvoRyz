@@ -1182,10 +1182,10 @@ function AiMentorComponent() {
         void supabaseRepo.insertAiMessage(user.id, 'model', result.text);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'AI mentor request failed';
+      console.warn('[AiMentor] Request error:', err);
       setAiHistory((prev) => [
         ...prev,
-        { role: 'model', content: `Unable to get guidance right now: ${msg}. Please try again.` },
+        { role: 'model', content: 'EvoRyz AI is temporarily unavailable. Please try again.' },
       ]);
     } finally {
       setLoading(false);

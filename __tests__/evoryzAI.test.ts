@@ -84,4 +84,34 @@ describe('EvoRyzAIService', () => {
     expect(res.error).toBe('AI mentor service rate limit exceeded');
     expect(res.text).toContain('AI mentor service rate limit exceeded');
   });
+
+  it('sanitizes raw Gemini API errors into a clean user-friendly fallback', async () => {
+    (supabase.auth.getSession as jest.Mock).mockResolvedValueOnce({
+      data: {
+        session: {
+          access_token: 'mock-jwt-token',
+        },
+      },
+      error: null,
+    });
+
+    const rawGeminiError = {
+      message: 'Edge Function returned a non-2xx status code',
+      context: {
+        json: jest.fn().mockResolvedValue({
+          error: 'Gemini API error: 404 NOT_FOUND models/gemini-2.5-flash is no longer available',
+        }),
+      },
+    };
+
+    (supabase.functions.invoke as jest.Mock).mockResolvedValueOnce({
+      data: null,
+      error: rawGeminiError,
+    });
+
+    const res = await EvoRyzAIService.ask('Who built you?');
+    expect(res.text).toBe('EvoRyz AI is temporarily unavailable. Please try again.');
+    expect(res.text).not.toContain('Gemini');
+    expect(res.text).not.toContain('404');
+  });
 });
