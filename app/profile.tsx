@@ -12,18 +12,21 @@ import {
   BackHandler,
   ActivityIndicator,
   Share,
+  Platform,
+  Linking,
 } from 'react-native';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Header, Card, Progress } from '@/src/components/ui';
 import { Avatar } from '@/src/components/Avatar';
+import { FriendsModal } from '@/src/components/friends/FriendsModal';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { feedback } from '@/src/services/feedback';
 import { sfx, ALL_SFX_LIST } from '@/src/services/sfx';
 import { UpdatesService, UpdateCheckResult } from '@/src/services/updates';
-import { sendTestNotification } from '@/src/services/notifications';
+import { sendTestNotification, scheduleDevTest2amNotification } from '@/src/services/notifications';
 
 export default function Profile() {
   const {
@@ -52,11 +55,31 @@ export default function Profile() {
     updateWorkspaceIdentity,
     exportUserData,
     deleteUserAccount,
+    winterArc,
+    updateFocusGuard,
+    triggerTestPing,
+    pingCooldown,
+    updateDisplayName,
+    friends,
+    incomingFriendRequests,
+    outgoingFriendRequests,
+    friendPingCooldowns,
+    sendFriendRequest,
+    respondFriendRequest,
+    removeFriend,
+    sendFriendPing,
+    searchUsers,
   } = useApp();
 
   const [activeModal, setActiveModal] = useState<
-    'account' | 'username' | 'security' | 'privacy' | 'workspace' | 'data' | 'about' | null
+    'account' | 'username' | 'displayName' | 'friends' | 'security' | 'privacy' | 'workspace' | 'data' | 'about' | null
   >(null);
+
+  // Display Name states
+  const [displayNameInput, setDisplayNameInput] = useState('');
+  const [displayNameLoading, setDisplayNameLoading] = useState(false);
+  const [displayNameError, setDisplayNameError] = useState<string | null>(null);
+  const [displayNameSuccess, setDisplayNameSuccess] = useState<string | null>(null);
 
   // Security PIN states
   const [currentPin, setCurrentPin] = useState('');
@@ -84,6 +107,8 @@ export default function Profile() {
 
   // Notification and OTA Update states
   const [testNotifLoading, setTestNotifLoading] = useState(false);
+  const [test2amLoading, setTest2amLoading] = useState(false);
+  const [testPingLoading, setTestPingLoading] = useState(false);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
@@ -195,6 +220,45 @@ export default function Profile() {
       feedback.error(true);
     } finally {
       setUsernameLoading(false);
+    }
+  };
+
+  const handleUpdateDisplayName = async () => {
+    const cleaned = displayNameInput.trim();
+    if (!cleaned) {
+      setDisplayNameError('Display name cannot be empty.');
+      feedback.error(true);
+      return;
+    }
+    if (cleaned.length > 50) {
+      setDisplayNameError('Display name cannot exceed 50 characters.');
+      feedback.error(true);
+      return;
+    }
+
+    setDisplayNameLoading(true);
+    setDisplayNameError(null);
+    setDisplayNameSuccess(null);
+
+    try {
+      const res = await updateDisplayName(cleaned);
+      if (!res.success) {
+        setDisplayNameError(res.error || 'Failed to update display name.');
+        feedback.error(true);
+      } else {
+        setDisplayNameSuccess('Display name updated!');
+        feedback.success(true);
+        setTimeout(() => {
+          setActiveModal(null);
+          setDisplayNameSuccess(null);
+        }, 1000);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update display name.';
+      setDisplayNameError(msg);
+      feedback.error(true);
+    } finally {
+      setDisplayNameLoading(false);
     }
   };
 
@@ -325,6 +389,52 @@ export default function Profile() {
     }
   };
 
+  const handleTest2amNotification = async () => {
+    setTest2amLoading(true);
+    feedback.tap(preferences.haptics);
+    const scheduled = await scheduleDevTest2amNotification(120);
+    setTest2amLoading(false);
+    if (scheduled) {
+      feedback.sound('notification', preferences.sfx);
+      Alert.alert(
+        '🌙 2 AM Boundary Test Scheduled',
+        'A test Day Boundary notification will trigger in 2 minutes.\n\nYou can now background or close the app and lock your device screen to test delivery and sound.'
+      );
+    } else {
+      Alert.alert(
+        'Permission Required',
+        'Notification permission was not granted. Please enable notifications for EvoRyz in device settings.'
+      );
+    }
+  };
+
+  const handleTestPing = async (bypassCooldown = false) => {
+    if (pingCooldown > 0 && !bypassCooldown) {
+      Alert.alert(
+        'Ping Cooldown Active',
+        `A ping was recently triggered. Please wait ${pingCooldown}s before testing again, or bypass cooldown for testing.`,
+        [
+          { text: 'Wait', style: 'cancel' },
+          {
+            text: 'Bypass Cooldown (Dev Only)',
+            style: 'destructive',
+            onPress: () => void handleTestPing(true),
+          },
+        ]
+      );
+      return;
+    }
+
+    setTestPingLoading(true);
+    feedback.tap(preferences.haptics);
+    const res = await triggerTestPing('Teammate (Test Ping)', bypassCooldown);
+    setTestPingLoading(false);
+
+    if (!res.success) {
+      Alert.alert('Test Ping Error', res.error || 'Failed to trigger test ping.');
+    }
+  };
+
   const handleCheckUpdates = async () => {
     setCheckingUpdates(true);
     feedback.tap(preferences.haptics);
@@ -424,6 +534,45 @@ export default function Profile() {
           trackColor={{ true: colors.violet }}
         />
       </View>
+      <View style={s.setting}>
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Daily 2:00 AM Reset Notification</Text>
+          <Text style={s.settingSub}>Scheduled by OS daily at 02:00 local time</Text>
+        </View>
+        <Ionicons name="time-outline" size={20} color="#00F5D4" />
+      </View>
+      <View style={s.setting}>
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Allow Teammate Pings</Text>
+          <Text style={s.settingSub}>Attention sounds and alerts from workspace friends</Text>
+        </View>
+        <Switch
+          value={preferences.allowPings !== false}
+          onValueChange={(allowPings) => updatePreferences({ allowPings })}
+          trackColor={{ true: '#00F5D4' }}
+        />
+      </View>
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          feedback.tap(preferences.haptics);
+          if (Platform.OS === 'android') {
+            Linking.sendIntent('android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS').catch(() =>
+              Linking.openSettings()
+            );
+          } else {
+            Linking.openSettings();
+          }
+        }}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Ping Sound & DND Access</Text>
+          <Text style={s.settingSub}>
+            Allow EvoRyz to get your attention with Ping sounds. Android requires Do Not Disturb permission to sound in Silent/DND.
+          </Text>
+        </View>
+        <Ionicons name="open-outline" size={18} color={colors.violetLight} />
+      </Pressable>
       <Pressable
         style={s.setting}
         onPress={handleTestNotification}
@@ -438,6 +587,83 @@ export default function Profile() {
         ) : (
           <Ionicons name="notifications-outline" size={20} color={colors.violetLight} />
         )}
+      </Pressable>
+
+      {__DEV__ && (
+        <>
+          <Pressable
+            style={s.setting}
+            onPress={handleTest2amNotification}
+            disabled={test2amLoading}
+          >
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={s.settingText}>Test 2 AM Day Boundary (Dev)</Text>
+              <Text style={s.settingSub}>Triggers in 2m. Lock screen/close app to test sound & delivery</Text>
+            </View>
+            {test2amLoading ? (
+              <ActivityIndicator size="small" color={colors.violetLight} />
+            ) : (
+              <Ionicons name="moon-outline" size={20} color={colors.violetLight} />
+            )}
+          </Pressable>
+
+          <Pressable
+            style={s.setting}
+            onPress={() => void handleTestPing(false)}
+            disabled={testPingLoading}
+          >
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={s.settingText}>
+                Test EvoRyz Ping (Dev) {pingCooldown > 0 ? `(${pingCooldown}s cooldown)` : ''}
+              </Text>
+              <Text style={s.settingSub}>
+                Triggers receiver-side ping alert: sound, haptic, modal & notification
+              </Text>
+            </View>
+            {testPingLoading ? (
+              <ActivityIndicator size="small" color={colors.violetLight} />
+            ) : (
+              <Ionicons name="radio-outline" size={20} color={colors.violetLight} />
+            )}
+          </Pressable>
+        </>
+      )}
+
+      {/* Focus Guard */}
+      <Text style={s.section}>FOCUS GUARD (WINTER ARC)</Text>
+      <View style={s.setting}>
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Focus Guard (Anti-Distraction)</Text>
+          <Text style={s.settingSub}>
+            Notify when usage in selected distracting apps exceeds {winterArc?.focusGuard?.thresholdMinutes || 30} mins
+          </Text>
+        </View>
+        <Switch
+          value={winterArc?.focusGuard?.enabled || false}
+          onValueChange={(enabled) => updateFocusGuard({ enabled })}
+          trackColor={{ true: '#00F5D4' }}
+        />
+      </View>
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          feedback.tap(preferences.haptics);
+          if (Platform.OS === 'android') {
+            Linking.sendIntent('android.settings.USAGE_ACCESS_SETTINGS').catch(() =>
+              Linking.openSettings()
+            );
+          } else {
+            Linking.openSettings();
+          }
+        }}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Android Usage Access Settings</Text>
+          <Text style={s.settingSub}>
+            Open Android system settings to grant Usage Access for local distraction tracking. EvoRyz never uploads app usage.
+          </Text>
+        </View>
+        <Ionicons name="shield-checkmark-outline" size={18} color="#00F5D4" />
       </Pressable>
 
       {/* Preferences */}
@@ -498,7 +724,24 @@ export default function Profile() {
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
       </Pressable>
 
-      {/* 2. Change Username */}
+      {/* 2. Display Name */}
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          setDisplayNameInput(user.name || '');
+          setDisplayNameError(null);
+          setDisplayNameSuccess(null);
+          setActiveModal('displayName');
+        }}
+      >
+        <View>
+          <Text style={s.settingText}>Display Name</Text>
+          <Text style={s.settingSub}>{user.name || 'Not set'}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </Pressable>
+
+      {/* 3. Change Username */}
       <Pressable
         style={s.setting}
         onPress={() => {
@@ -513,6 +756,31 @@ export default function Profile() {
           <Text style={s.settingSub}>@{user.username || 'not set'}</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </Pressable>
+
+      {/* 4. Friends & Social */}
+      <Pressable
+        style={s.setting}
+        onPress={() => {
+          feedback.tap(preferences.haptics);
+          setActiveModal('friends');
+        }}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Friends & Social</Text>
+          <Text style={s.settingSub}>
+            {friends.length} friend{friends.length === 1 ? '' : 's'}
+            {incomingFriendRequests.length > 0
+              ? ` · ${incomingFriendRequests.length} pending request${incomingFriendRequests.length === 1 ? '' : 's'}`
+              : ''}
+          </Text>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {incomingFriendRequests.length > 0 && (
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#FF6D7A' }} />
+          )}
+          <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+        </View>
       </Pressable>
 
       {/* 2. Security */}
@@ -715,6 +983,104 @@ export default function Profile() {
           </View>
         </View>
       </Modal>
+
+      {/* Change Display Name Modal */}
+      <Modal visible={activeModal === 'displayName'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={() => {
+                  setActiveModal(null);
+                  setDisplayNameError(null);
+                  setDisplayNameSuccess(null);
+                }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+              >
+                <Ionicons name="chevron-back" size={22} color={colors.violetLight} />
+                <Text style={{ color: colors.violetLight, fontWeight: '700', fontSize: 15 }}>Back</Text>
+              </Pressable>
+              <Text style={[s.modalTitle, { marginBottom: 0 }]}>Edit Display Name</Text>
+              <View style={{ width: 44 }} />
+            </View>
+
+            <Text style={s.modalBody}>
+              Your friendly display name seen by teammates, friends, and leaderboard participants. 1–50 characters.
+            </Text>
+
+            <View style={s.modalRow}>
+              <Text style={s.modalLabel}>Current</Text>
+              <Text style={s.modalVal}>{user.name || 'not set'}</Text>
+            </View>
+
+            <Text style={s.inputLabel}>NEW DISPLAY NAME</Text>
+            <View style={s.usernameInputRow}>
+              <TextInput
+                value={displayNameInput}
+                onChangeText={(t) => {
+                  setDisplayNameInput(t);
+                  setDisplayNameError(null);
+                  setDisplayNameSuccess(null);
+                }}
+                placeholder="Enter display name"
+                placeholderTextColor={colors.muted}
+                maxLength={50}
+                style={[s.usernameInput, { paddingLeft: 12 }]}
+                editable={!displayNameLoading}
+              />
+            </View>
+
+            {displayNameError && <Text style={s.modalError}>{displayNameError}</Text>}
+            {displayNameSuccess && <Text style={s.modalSuccess}>{displayNameSuccess}</Text>}
+
+            <View style={s.modalFooter}>
+              <Pressable
+                style={s.modalClose}
+                onPress={() => {
+                  setActiveModal(null);
+                  setDisplayNameError(null);
+                  setDisplayNameSuccess(null);
+                }}
+                disabled={displayNameLoading}
+              >
+                <Text style={s.modalCloseText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  s.btnPrimary,
+                  { flex: 1, marginTop: 0 },
+                  (displayNameLoading || !displayNameInput.trim()) && { opacity: 0.5 },
+                ]}
+                disabled={displayNameLoading || !displayNameInput.trim()}
+                onPress={handleUpdateDisplayName}
+              >
+                <Text style={s.btnPrimaryText}>{displayNameLoading ? 'Saving…' : 'Save'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Friends & Connections Modal */}
+      <FriendsModal
+        visible={activeModal === 'friends'}
+        onClose={() => setActiveModal(null)}
+        currentUserId={user.id}
+        friends={friends}
+        incomingRequests={incomingFriendRequests}
+        outgoingRequests={outgoingFriendRequests}
+        pingCooldowns={friendPingCooldowns}
+        onSendPing={sendFriendPing}
+        onSendRequest={sendFriendRequest}
+        onRespondRequest={respondFriendRequest}
+        onRemoveFriend={removeFriend}
+        onSearchUsers={searchUsers}
+        hapticsEnabled={preferences.haptics}
+        sfxEnabled={preferences.sfx}
+      />
 
       {/* 2. Security Modal */}
       <Modal visible={activeModal === 'security'} transparent animationType="fade" onRequestClose={() => setActiveModal(null)}>

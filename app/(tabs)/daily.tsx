@@ -3,6 +3,8 @@ import { ScrollView, View, Text, Pressable, StyleSheet, Modal } from 'react-nati
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Header, Card, Progress, CreateModal } from '@/src/components/ui';
+import { WinterArcBanner } from '@/src/components/WinterArcBanner';
+import { WinterArcTrackerModal } from '@/src/components/WinterArcTrackerModal';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { feedback } from '@/src/services/feedback';
@@ -28,6 +30,7 @@ export default function Daily() {
   const [open, setOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showTrends, setShowTrends] = useState(false);
+  const [showWinterArcTracker, setShowWinterArcTracker] = useState(false);
 
   const complete = tasks.filter((t) => t.completed).length;
   const totalCalories = meals.reduce((acc, m) => acc + m.calories, 0);
@@ -40,6 +43,9 @@ export default function Daily() {
           sub="Your EvoRyz day · resets at 2 AM"
           onProfile={() => router.push('/profile')}
         />
+
+        {/* Winter Arc 2026 Seasonal Banner */}
+        <WinterArcBanner onOpenTracker={() => router.push('/winter-arc' as any)} />
 
         {/* Hero Today Card */}
         <Card style={s.hero}>
@@ -313,6 +319,12 @@ export default function Daily() {
           </View>
         </View>
       </Modal>
+
+      {/* Winter Arc Monthly Tracker Modal */}
+      <WinterArcTrackerModal
+        visible={showWinterArcTracker}
+        onClose={() => setShowWinterArcTracker(false)}
+      />
     </View>
   );
 }

@@ -51,3 +51,27 @@ export function displayEvoDay(day: string): string {
   }
   return day;
 }
+
+/**
+ * Returns the exact Date of the upcoming 02:00 AM local device boundary.
+ * If current time is 01:30 AM, returns today at 02:00 AM.
+ * If current time is 02:00 AM or later, returns tomorrow at 02:00 AM.
+ */
+export function getNext2amBoundaryDate(now = new Date()): Date {
+  const next = new Date(now);
+  next.setSeconds(0);
+  next.setMilliseconds(0);
+  next.setMinutes(0);
+  next.setHours(DAY_BOUNDARY_HOUR);
+  if (now.getTime() >= next.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+/**
+ * Returns milliseconds remaining until the upcoming 02:00 AM local device boundary.
+ */
+export function getTimeUntilNext2amBoundary(now = new Date()): number {
+  return Math.max(0, getNext2amBoundaryDate(now).getTime() - now.getTime());
+}

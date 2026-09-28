@@ -1,9 +1,6 @@
 /* eslint-disable import/first */
 // Polyfill global environment for Hermes / React Native before importing node-forge
 if (typeof globalThis !== 'undefined') {
-  if (typeof (globalThis as any).window === 'undefined') {
-    (globalThis as any).window = globalThis;
-  }
   if (typeof (globalThis as any).self === 'undefined') {
     (globalThis as any).self = globalThis;
   }

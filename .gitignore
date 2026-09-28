@@ -21,3 +21,4 @@ node_modules/
 # Expo local state
 supabase/.temp/
 dist/
+*.apk

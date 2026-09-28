@@ -1,6 +1,7 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
-import { AppState } from 'react-native';
+import { createContext, ReactNode, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import { AppState, Alert } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 
 import {
@@ -20,6 +21,13 @@ import {
   WorkspaceTheme,
   TeamGoal,
   DirectMessage,
+  WinterArcState,
+  WinterArcHabit,
+  WinterArcNotificationLevel,
+  FocusGuardConfig,
+  PingEvent,
+  Friend,
+  FriendRequest,
 } from '@/src/types';
 import { evoryzDay } from '@/src/services/evoryzDay';
 import { journalCrypto, JournalSecurityConfig, EncryptedPayload } from '@/src/services/encryption';
@@ -28,11 +36,16 @@ import {
   localNotificationScheduler,
   sendPeerMessageNotification,
   triggerDailyRecapNotification,
+  scheduleDaily2amNotification,
+  scheduleWinterArcNotifications,
+  sendPingNotification,
 } from '@/src/services/notifications';
+import { defaultWinterArcState, isWinterArcDateLocked } from '@/src/services/winterArc';
 import { feedback } from '@/src/services/feedback';
 import { sfx } from '@/src/services/sfx';
 import { authService } from '@/src/services/auth';
 import { supabaseRepo } from '@/src/services/supabaseRepository';
+import { friendService } from '@/src/services/friendService';
 import { supabase } from '@/utils/supabase';
 import { generateUUID, ensureUUID, isUUID } from '@/src/utils/uuid';
 
@@ -128,6 +141,7 @@ type State = ReturnType<typeof seed> & {
   mode?: UsageMode;
   workspace?: Workspace;
   journalSecurity?: JournalSecurityConfig | null;
+  winterArc: WinterArcState;
 };
 
 const initial = (userId = 'unauthenticated'): State => ({
@@ -136,6 +150,7 @@ const initial = (userId = 'unauthenticated'): State => ({
   summaries: [],
   hasCompletedSetup: false,
   journalSecurity: null,
+  winterArc: defaultWinterArcState,
   ...seed(evoryzDay(), userId),
 });
 
@@ -154,6 +169,7 @@ type Ctx = State & {
   joinWorkspace: (inviteCode: string) => Promise<{ success: boolean; error?: string }>;
   leaveWorkspace: () => Promise<{ success: boolean; error?: string }>;
   updateUsername: (newUsername: string) => Promise<{ success: boolean; error?: string }>;
+  updateDisplayName: (newDisplayName: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
   toggleTask: (id: string) => void;
   addTask: (title: string, visibility: Visibility) => void;
@@ -223,6 +239,33 @@ type Ctx = State & {
   deleteUserAccount: () => Promise<boolean>;
   exportUserData: () => Promise<string | null>;
   isOnline: boolean;
+  // Winter Arc 2026:
+  acceptWinterArc: () => void;
+  addWinterArcHabit: (title: string, icon?: string, color?: string) => void;
+  editWinterArcHabit: (id: string, updates: Partial<WinterArcHabit>) => void;
+  deleteWinterArcHabit: (id: string) => void;
+  reorderWinterArcHabits: (habits: WinterArcHabit[]) => void;
+  toggleWinterArcDay: (habitId: string, dateStr: string) => boolean;
+  setWinterArcNotificationLevel: (level: WinterArcNotificationLevel) => void;
+  updateFocusGuard: (config: Partial<FocusGuardConfig>) => void;
+  // EvoRyz Ping:
+  activePingAlert: PingEvent | null;
+  dismissActivePingAlert: () => void;
+  sendPing: (recipientId: string, recipientName: string) => Promise<{ success: boolean; error?: string }>;
+  triggerTestPing: (senderName?: string, bypassCooldown?: boolean) => Promise<{ success: boolean; error?: string }>;
+  pingCooldown: number;
+  // Friends & Social:
+  friends: Friend[];
+  incomingFriendRequests: FriendRequest[];
+  outgoingFriendRequests: FriendRequest[];
+  friendPingCooldowns: Record<string, number>;
+  sendFriendRequest: (username: string) => Promise<{ success: boolean; error?: string; status?: string }>;
+  respondFriendRequest: (requestId: string, accept: boolean) => Promise<{ success: boolean; error?: string }>;
+  removeFriend: (friendId: string) => Promise<{ success: boolean; error?: string }>;
+  sendFriendPing: (friendId: string) => Promise<{ success: boolean; error?: string; cooldownRemaining?: number }>;
+  refreshFriends: () => Promise<void>;
+  // Workspace sync:
+  refreshWorkspaceMembers: () => Promise<void>;
 };
 
 const Context = createContext<Ctx | null>(null);
@@ -267,6 +310,13 @@ function rollover(state: State): State {
       completedToday: false,
     })),
     activities: [],
+    winterArc: state.winterArc
+      ? {
+          ...defaultWinterArcState,
+          ...state.winterArc,
+          habits: Array.isArray(state.winterArc.habits) ? state.winterArc.habits : [],
+        }
+      : defaultWinterArcState,
   };
 }
 
@@ -286,6 +336,192 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [teamGoals, setTeamGoals] = useState<TeamGoal[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [isOnline, setIsOnline] = useState(true);
+  const [activePingAlert, setActivePingAlert] = useState<PingEvent | null>(null);
+  const [pingCooldown, setPingCooldown] = useState<number>(0);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [incomingFriendRequests, setIncomingFriendRequests] = useState<FriendRequest[]>([]);
+  const [outgoingFriendRequests, setOutgoingFriendRequests] = useState<FriendRequest[]>([]);
+  const [friendPingCooldowns, setFriendPingCooldowns] = useState<Record<string, number>>({});
+
+  // Friend ping cooldown countdown timer
+  useEffect(() => {
+    const hasActive = Object.values(friendPingCooldowns).some((cd) => cd > 0);
+    if (!hasActive) return;
+    const timer = setInterval(() => {
+      setFriendPingCooldowns((prev) => {
+        const next: Record<string, number> = {};
+        let changed = false;
+        for (const [id, cd] of Object.entries(prev)) {
+          if (cd > 0) {
+            next[id] = cd - 1;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [friendPingCooldowns]);
+
+  const refreshFriends = useCallback(async () => {
+    const uid = session?.user?.id || state.user.id;
+    if (!isUUID(uid)) return;
+    try {
+      const list = await friendService.fetchFriends(uid);
+      setFriends(list);
+      const reqs = await friendService.fetchFriendRequests(uid);
+      setIncomingFriendRequests(reqs.incoming);
+      setOutgoingFriendRequests(reqs.outgoing);
+    } catch (err) {
+      console.warn('[AppContext] refreshFriends error:', err);
+    }
+  }, [session?.user?.id, state.user.id]);
+
+  useEffect(() => {
+    if (hydrated) {
+      void refreshFriends();
+    }
+  }, [hydrated, refreshFriends]);
+
+  // Realtime subscription for friend pings and friend requests
+  useEffect(() => {
+    const uid = session?.user?.id || state.user.id;
+    if (!uid || !isUUID(uid)) return;
+
+    const channel = supabase
+      .channel(`user-friends-pings-${uid}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'friend_pings',
+          filter: `receiver_id=eq.${uid}`,
+        },
+        (payload) => {
+          const ping = payload.new as any;
+          if (!ping) return;
+          if (state.user.settings.preferences.allowPings === false) return;
+
+          const sender = friends.find((f) => f.id === ping.sender_id);
+          const senderName = sender?.name || 'A friend';
+
+          feedback.sound('notification', state.user.settings.preferences.sfx);
+          feedback.haptic('heavy');
+          void sendPingNotification(senderName);
+          Alert.alert('👋 Friend Ping', `${senderName} pinged you!`);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friend_requests',
+        },
+        () => {
+          void refreshFriends();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friendships',
+        },
+        () => {
+          void refreshFriends();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel).catch(() => {});
+    };
+  }, [
+    session?.user?.id,
+    state.user.id,
+    state.user.settings.preferences.allowPings,
+    state.user.settings.preferences.sfx,
+    friends,
+    refreshFriends,
+  ]);
+
+  // Ping cooldown countdown timer
+  useEffect(() => {
+    if (pingCooldown <= 0) return;
+    const interval = setInterval(() => {
+      setPingCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [pingCooldown]);
+
+  // Schedule OS-level recurring Daily 2:00 AM notification
+  useEffect(() => {
+    if (hydrated) {
+      void scheduleDaily2amNotification(state.user?.settings?.notifications);
+    }
+  }, [hydrated, state.user?.settings?.notifications]);
+
+  // Schedule Winter Arc notifications if accepted
+  useEffect(() => {
+    if (hydrated && state.winterArc?.accepted) {
+      void scheduleWinterArcNotifications(state.winterArc.notificationLevel);
+    }
+  }, [hydrated, state.winterArc?.accepted, state.winterArc?.notificationLevel]);
+
+  // EvoRyz Ping Realtime Subscription
+  useEffect(() => {
+    const wsId = state.workspace?.id;
+    const currentUserId = session?.user?.id || state.user.id;
+    if (!wsId || !isUUID(wsId) || !currentUserId || !isUUID(currentUserId)) return;
+
+    const channel = supabase
+      .channel(`workspace-ping-${wsId}`, {
+        config: { broadcast: { self: false } },
+      })
+      .on('broadcast', { event: 'teammate_ping' }, ({ payload }) => {
+        const ping = payload as PingEvent;
+        if (ping.recipientId && ping.recipientId !== currentUserId) {
+          return;
+        }
+        if (state.user.settings.preferences.allowPings === false) {
+          return;
+        }
+
+        feedback.sound('notification', state.user.settings.preferences.sfx);
+        feedback.haptic('heavy');
+        setActivePingAlert(ping);
+        void sendPingNotification(ping.senderName);
+      })
+      .on('broadcast', { event: 'teammate_winter_arc_join' }, ({ payload }) => {
+        if (!payload?.userId) return;
+        setState((prev) => {
+          if (!prev.workspace) return prev;
+          return {
+            ...prev,
+            workspace: {
+              ...prev.workspace,
+              members: prev.workspace.members.map((m) =>
+                m.id === payload.userId ? { ...m, acceptedWinterArc: true } : m
+              ),
+            },
+          };
+        });
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel).catch(() => {});
+    };
+  }, [
+    state.workspace?.id,
+    session?.user?.id,
+    state.user.id,
+    state.user.settings.preferences.allowPings,
+    state.user.settings.preferences.sfx,
+  ]);
 
   // 1. Hydrate local cached state and sound effects on launch
   useEffect(() => {
@@ -312,12 +548,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 ? {
                     ...stored.workspace,
                     id: ensureUUID(stored.workspace.id),
-                    members: (stored.workspace.members ?? []).map((mem) => ({
-                      ...mem,
-                      id: ensureUUID(mem.id),
-                    })),
+                    members: (stored.workspace.members && stored.workspace.members.length > 0)
+                      ? stored.workspace.members.map((mem) => ({
+                          ...mem,
+                          id: ensureUUID(mem.id),
+                        }))
+                      : [{ id: stored.user?.id || 'me', name: stored.user?.name || 'You', avatar: stored.user?.avatar || 'Y', role: 'member' }],
                   }
                 : undefined,
+              winterArc: stored.winterArc
+                ? {
+                    ...defaultWinterArcState,
+                    ...stored.winterArc,
+                    habits: Array.isArray(stored.winterArc.habits) ? stored.winterArc.habits : [],
+                  }
+                : defaultWinterArcState,
               user: {
                 ...prev.user,
                 ...stored.user,
@@ -911,6 +1156,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
           user: {
             ...p.user,
             username: cleaned,
+          },
+        }));
+        return { success: true };
+      },
+
+      updateDisplayName: async (newDisplayName: string) => {
+        const cleaned = newDisplayName.trim();
+        if (cleaned.length < 1) {
+          return { success: false, error: 'Display name cannot be empty.' };
+        }
+        if (cleaned.length > 50) {
+          return { success: false, error: 'Display name cannot exceed 50 characters.' };
+        }
+
+        if (isUUID(state.user.id)) {
+          const res = await friendService.updateDisplayName(state.user.id, cleaned);
+          if (!res.success) {
+            return res;
+          }
+        }
+        update((p) => ({
+          ...p,
+          user: {
+            ...p.user,
+            name: cleaned,
           },
         }));
         return { success: true };
@@ -1716,6 +1986,316 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
 
       isOnline,
+
+      // Winter Arc 2026:
+      acceptWinterArc: () => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              accepted: true,
+              acceptedAt: current.acceptedAt || new Date().toISOString(),
+            },
+          };
+        });
+
+        const wsId = state.workspace?.id;
+        const currentUid = session?.user?.id || state.user.id;
+        if (wsId && isUUID(wsId) && currentUid && isUUID(currentUid)) {
+          const channel = supabase.channel(`workspace-ping-${wsId}`);
+          void channel.send({
+            type: 'broadcast',
+            event: 'teammate_winter_arc_join',
+            payload: { userId: currentUid },
+          }).catch(() => undefined);
+        }
+
+        feedback.sound('workspaceConnected', state.user.settings.preferences.sfx);
+        feedback.haptic('success');
+      },
+
+      addWinterArcHabit: (title: string, icon = 'flame', color = '#00F5D4') => {
+        if (!title.trim()) return;
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          const newHabit: WinterArcHabit = {
+            id: generateUUID(),
+            title: title.trim(),
+            order: current.habits.length,
+            icon,
+            color,
+            completedDays: [],
+            createdAt: new Date().toISOString(),
+          };
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              habits: [...current.habits, newHabit],
+            },
+          };
+        });
+        feedback.tap(state.user.settings.preferences.haptics);
+      },
+
+      editWinterArcHabit: (id: string, updates: Partial<WinterArcHabit>) => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              habits: current.habits.map((h) => (h.id === id ? { ...h, ...updates } : h)),
+            },
+          };
+        });
+        feedback.tap(state.user.settings.preferences.haptics);
+      },
+
+      deleteWinterArcHabit: (id: string) => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              habits: current.habits.filter((h) => h.id !== id),
+            },
+          };
+        });
+        feedback.tap(state.user.settings.preferences.haptics);
+      },
+
+      reorderWinterArcHabits: (habits: WinterArcHabit[]) => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              habits,
+            },
+          };
+        });
+      },
+
+      toggleWinterArcDay: (habitId: string, dateStr: string): boolean => {
+        if (isWinterArcDateLocked(dateStr)) {
+          feedback.sound('error', state.user.settings.preferences.sfx);
+          feedback.haptic('warning');
+          return false;
+        }
+
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          const updatedHabits = current.habits.map((h) => {
+            if (h.id !== habitId) return h;
+            const exists = h.completedDays.includes(dateStr);
+            const newDays = exists
+              ? h.completedDays.filter((d: string) => d !== dateStr)
+              : [...h.completedDays, dateStr];
+            return { ...h, completedDays: newDays };
+          });
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              habits: updatedHabits,
+            },
+          };
+        });
+        feedback.sound('habitComplete', state.user.settings.preferences.sfx);
+        feedback.haptic('medium');
+        return true;
+      },
+
+      setWinterArcNotificationLevel: (level: WinterArcNotificationLevel) => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              notificationLevel: level,
+            },
+          };
+        });
+        feedback.tap(state.user.settings.preferences.haptics);
+      },
+
+      updateFocusGuard: (config: Partial<FocusGuardConfig>) => {
+        update((prev) => {
+          const current = prev.winterArc ?? defaultWinterArcState;
+          return {
+            ...prev,
+            winterArc: {
+              ...current,
+              focusGuard: {
+                ...current.focusGuard,
+                ...config,
+              },
+            },
+          };
+        });
+        feedback.tap(state.user.settings.preferences.haptics);
+      },
+
+      // EvoRyz Ping:
+      activePingAlert,
+      dismissActivePingAlert: () => {
+        setActivePingAlert(null);
+      },
+      sendPing: async (recipientId: string, recipientName: string): Promise<{ success: boolean; error?: string }> => {
+        if (pingCooldown > 0) {
+          return { success: false, error: `Cooldown active. Please wait ${pingCooldown}s.` };
+        }
+        const wsId = state.workspace?.id;
+        const senderId = session?.user?.id || state.user.id;
+        const senderName = state.user.name || 'Your Teammate';
+
+        if (!wsId || !isUUID(wsId)) {
+          return { success: false, error: 'You must be in a workspace to send a ping.' };
+        }
+
+        try {
+          const pingPayload: PingEvent = {
+            id: generateUUID(),
+            senderId,
+            senderName,
+            recipientId,
+            timestamp: new Date().toISOString(),
+            workspaceId: wsId,
+          };
+
+          const channel = supabase.channel(`workspace-ping-${wsId}`);
+          await channel.send({
+            type: 'broadcast',
+            event: 'teammate_ping',
+            payload: pingPayload,
+          });
+
+          setPingCooldown(60);
+          feedback.sound('send', state.user.settings.preferences.sfx);
+          feedback.haptic('medium');
+
+          return { success: true };
+        } catch (err: any) {
+          console.warn('[AppContext] sendPing error:', err);
+          return { success: false, error: err?.message || 'Failed to send ping.' };
+        }
+      },
+      triggerTestPing: async (senderName?: string, bypassCooldown = false) => {
+        const isDev = typeof __DEV__ !== 'undefined' ? Boolean(__DEV__) : process.env.NODE_ENV !== 'production';
+        if (!isDev) {
+          return { success: false, error: 'Dev-only ping is disabled in production.' };
+        }
+        const currentUserId = session?.user?.id || state.user.id;
+        const wsId = state.workspace?.id || 'dev-workspace';
+
+        if (state.user.settings.preferences.allowPings === false) {
+          return { success: false, error: 'Pings are disabled in your settings.' };
+        }
+
+        if (!bypassCooldown && pingCooldown > 0) {
+          return { success: false, error: `Please wait ${pingCooldown}s before testing again.` };
+        }
+
+        const testPing: PingEvent = {
+          id: generateUUID(),
+          senderId: 'dev-sender',
+          senderName: senderName || 'Teammate (Test Ping)',
+          recipientId: currentUserId,
+          workspaceId: wsId,
+          timestamp: new Date().toISOString(),
+        };
+
+        try {
+          feedback.sound('notification', state.user.settings.preferences.sfx);
+          feedback.haptic('heavy');
+          setActivePingAlert(testPing);
+          await sendPingNotification(testPing.senderName);
+          setPingCooldown(60);
+
+          return { success: true };
+        } catch (err: any) {
+          console.warn('[AppContext] triggerTestPing error:', err);
+          return { success: false, error: err?.message || 'Failed to trigger test ping.' };
+        }
+      },
+      pingCooldown,
+
+      // Friends & Social:
+      friends,
+      incomingFriendRequests,
+      outgoingFriendRequests,
+      friendPingCooldowns,
+      refreshFriends,
+
+      sendFriendRequest: async (username: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return { success: false, error: 'Sign in to send friend requests.' };
+        const res = await friendService.sendFriendRequest(username, uid);
+        if (res.success) {
+          void refreshFriends();
+        }
+        return res;
+      },
+
+      respondFriendRequest: async (requestId: string, accept: boolean) => {
+        const res = await friendService.respondFriendRequest(requestId, accept);
+        if (res.success) {
+          void refreshFriends();
+        }
+        return res;
+      },
+
+      removeFriend: async (friendId: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return { success: false, error: 'Invalid user session.' };
+        const res = await friendService.removeFriend(uid, friendId);
+        if (res.success) {
+          setFriends((prev) => prev.filter((f) => f.id !== friendId));
+          void refreshFriends();
+        }
+        return res;
+      },
+
+      sendFriendPing: async (friendId: string) => {
+        const uid = state.user.id;
+        if (!isUUID(uid)) return { success: false, error: 'Invalid user session.' };
+        const res = await friendService.sendFriendPing(uid, friendId);
+        if (res.success) {
+          setFriendPingCooldowns((prev) => ({ ...prev, [friendId]: 60 }));
+        } else if (res.cooldownRemaining) {
+          setFriendPingCooldowns((prev) => ({ ...prev, [friendId]: res.cooldownRemaining! }));
+        }
+        return res;
+      },
+
+      // Workspace sync:
+      refreshWorkspaceMembers: async () => {
+        const wsId = state.workspace?.id;
+        if (!wsId || !isUUID(wsId)) return;
+        try {
+          const freshMembers = await supabaseRepo.loadWorkspaceMembers(wsId);
+          if (freshMembers && freshMembers.length > 0) {
+            setState((prev) => {
+              if (!prev.workspace || prev.workspace.id !== wsId) return prev;
+              return {
+                ...prev,
+                workspace: {
+                  ...prev.workspace,
+                  members: freshMembers,
+                },
+              };
+            });
+          }
+        } catch (err) {
+          console.warn('[AppContext] refreshWorkspaceMembers error:', err);
+        }
+      },
     };
   }, [
     state,
@@ -1728,6 +2308,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     teamGoals,
     directMessages,
     isOnline,
+    activePingAlert,
+    pingCooldown,
+    friends,
+    incomingFriendRequests,
+    outgoingFriendRequests,
+    friendPingCooldowns,
+    refreshFriends,
   ]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;

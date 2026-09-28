@@ -17,12 +17,14 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE"
       ]
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.0.0",
     "updates": {
       "url": "https://u.expo.dev/238409a4-bc1e-44ac-98b3-23a05b34ff0c"
     },
@@ -40,7 +42,10 @@
         "expo-notifications",
         {
           "icon": "./assets/images/icon.png",
-          "color": "#7C3AED"
+          "color": "#7C3AED",
+          "sounds": [
+            "./assets/sfx/notification.mp3"
+          ]
         }
       ]
     ],

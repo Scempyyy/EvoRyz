@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { ScrollView, View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Modal } from 'react-native';
 import { Header, Card } from '@/src/components/ui';
 import { Avatar } from '@/src/components/Avatar';
+import { FriendsModal } from '@/src/components/friends/FriendsModal';
 import { useApp } from '@/src/store/AppContext';
 import { colors } from '@/src/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,12 +19,21 @@ export default function Chat() {
     searchUsers,
     directMessages,
     savedMessageIds,
+    friends,
+    incomingFriendRequests,
+    outgoingFriendRequests,
+    friendPingCooldowns,
+    sendFriendPing,
+    sendFriendRequest,
+    respondFriendRequest,
+    removeFriend,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<{ id: string; name: string; username: string; avatar: string }[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showSavedModal, setShowSavedModal] = useState(false);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
 
   const lastMsg = messages.at(-1)?.content ?? 'Start a conversation';
   const isSolo = mode === 'solo' || !workspace;
@@ -137,6 +147,37 @@ export default function Chat() {
         </View>
       )}
 
+      {/* Friends & Connections */}
+      <Card
+        style={[s.chat, { borderColor: '#7357F640', marginBottom: 12 }]}
+        onPress={() => {
+          feedback.tap(user.settings.preferences.haptics);
+          setShowFriendsModal(true);
+        }}
+      >
+        <View style={[s.icon, { backgroundColor: '#181432' }]}>
+          <Ionicons name="people" size={22} color="#00F5D4" />
+        </View>
+        <View style={s.info}>
+          <View style={s.rowTop}>
+            <Text style={s.name}>Friends & Connections</Text>
+            {incomingFriendRequests.length > 0 && (
+              <View style={[s.privateBadge, { backgroundColor: '#FF6D7A25' }]}>
+                <Text style={[s.privateBadgeText, { color: '#FF6D7A' }]}>
+                  {incomingFriendRequests.length} new
+                </Text>
+              </View>
+            )}
+          </View>
+          <Text style={s.preview}>
+            {friends.length === 0
+              ? 'Connect with friends to chat & ping'
+              : `${friends.length} friend${friends.length === 1 ? '' : 's'} · Tap to ping or message`}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+      </Card>
+
       {/* 2. Private Personal Journal */}
       <Card
         style={s.chat}
@@ -198,7 +239,7 @@ export default function Chat() {
               <Text style={s.time}>Realtime</Text>
             </View>
             <Text style={s.preview} numberOfLines={1}>
-              {workspace.members.length} members · {lastMsg}
+              {Math.max(1, workspace.members?.length || 1)} members · {lastMsg}
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.muted} />
@@ -311,6 +352,24 @@ export default function Chat() {
           </View>
         </View>
       </Modal>
+
+      {/* Friends Modal */}
+      <FriendsModal
+        visible={showFriendsModal}
+        onClose={() => setShowFriendsModal(false)}
+        currentUserId={user.id}
+        friends={friends}
+        incomingRequests={incomingFriendRequests}
+        outgoingRequests={outgoingFriendRequests}
+        pingCooldowns={friendPingCooldowns}
+        onSendPing={sendFriendPing}
+        onSendRequest={sendFriendRequest}
+        onRespondRequest={respondFriendRequest}
+        onRemoveFriend={removeFriend}
+        onSearchUsers={searchUsers}
+        hapticsEnabled={user.settings.preferences.haptics}
+        sfxEnabled={user.settings.preferences.sfx}
+      />
     </ScrollView>
   );
 }

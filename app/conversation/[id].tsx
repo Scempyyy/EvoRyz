@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocalSearchParams, router } from 'expo-router';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   BackHandler,
   Image,
@@ -783,12 +784,17 @@ function WorkspaceChatComponent() {
     workspace,
     user,
     refreshWorkspaceMessages,
+    refreshWorkspaceMembers,
     chatConnectionStatus,
     retryChatConnection,
     togglePinMessage,
     bookmarkMessage,
     removeBookmark,
     savedMessageIds,
+    sendPing,
+    pingCooldown,
+    activePingAlert,
+    dismissActivePingAlert,
   } = useApp();
 
   const insets = useSafeAreaInsets();
@@ -823,8 +829,9 @@ function WorkspaceChatComponent() {
   useEffect(() => {
     if (workspace?.id) {
       void refreshWorkspaceMessages();
+      void refreshWorkspaceMembers();
     }
-  }, [workspace?.id, refreshWorkspaceMessages]);
+  }, [workspace?.id, refreshWorkspaceMessages, refreshWorkspaceMembers]);
 
   const send = async () => {
     const trimmed = text.trim();
@@ -994,7 +1001,7 @@ function WorkspaceChatComponent() {
                 }}
               >
                 <Text style={s.sub}>
-                  {workspace.members.length > 0 ? `${workspace.members.length} members · ` : ''}
+                  {Math.max(1, workspace.members.length)} members · 
                   {chatConnectionStatus === 'CONNECTED'
                     ? 'Live Realtime'
                     : chatConnectionStatus === 'CONNECTING'
@@ -1012,6 +1019,31 @@ function WorkspaceChatComponent() {
           </View>
         </Pressable>
 
+        {workspace && (
+          <Pressable
+            hitSlop={8}
+            disabled={pingCooldown > 0}
+            onPress={async () => {
+              feedback.tap(user.settings.preferences.haptics);
+              const teammate = workspace.members.find((m) => m.id !== user.id);
+              const targetId = teammate?.id || '';
+              const targetName = teammate?.name || 'Teammate';
+              const res = await sendPing(targetId, targetName);
+              if (res.success) {
+                Alert.alert('⚡ Ping Sent', `Attention sound sent to ${targetName}.`);
+              } else {
+                Alert.alert('Ping', res.error || 'Failed to send ping.');
+              }
+            }}
+            style={[s.pingHeaderButton, pingCooldown > 0 && s.pingHeaderButtonDisabled]}
+          >
+            <Ionicons name="flash" size={14} color={pingCooldown > 0 ? colors.muted : '#00F5D4'} />
+            <Text style={[s.pingHeaderText, pingCooldown > 0 && s.pingHeaderTextDisabled]}>
+              {pingCooldown > 0 ? `${pingCooldown}s` : 'PING'}
+            </Text>
+          </Pressable>
+        )}
+
         <Pressable
           hitSlop={10}
           onPress={() => setSearchOpen((prev) => !prev)}
@@ -1028,6 +1060,24 @@ function WorkspaceChatComponent() {
           <Ionicons name="ellipsis-vertical" size={20} color={colors.muted} />
         </Pressable>
       </View>
+
+      {/* In-App Teammate Ping Alert */}
+      {activePingAlert && (
+        <View style={s.pingBanner}>
+          <View style={s.pingBannerLeft}>
+            <Ionicons name="flash" size={18} color="#00F5D4" />
+            <View style={{ flex: 1 }}>
+              <Text style={s.pingBannerTitle}>⚡ EVO RYZ PING</Text>
+              <Text style={s.pingBannerBody} numberOfLines={1}>
+                {activePingAlert.senderName} is pinging you to come online!
+              </Text>
+            </View>
+          </View>
+          <Pressable style={s.pingBannerDismiss} onPress={dismissActivePingAlert}>
+            <Ionicons name="close" size={18} color={colors.text} />
+          </Pressable>
+        </View>
+      )}
 
       {/* In-Chat Search Bar */}
       {searchOpen && (
@@ -2022,6 +2072,61 @@ const s = StyleSheet.create({
   },
   title: { color: 'white', fontWeight: '800', fontSize: 17 },
   sub: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  pingHeaderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#00F5D418',
+    borderWidth: 1,
+    borderColor: '#00F5D440',
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+  },
+  pingHeaderButtonDisabled: {
+    backgroundColor: '#1E293B40',
+    borderColor: '#374151',
+    opacity: 0.6,
+  },
+  pingHeaderText: {
+    color: '#00F5D4',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  pingHeaderTextDisabled: {
+    color: colors.muted,
+  },
+  pingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#13232A',
+    borderBottomWidth: 1,
+    borderBottomColor: '#00F5D450',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  pingBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  pingBannerTitle: {
+    color: '#00F5D4',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  pingBannerBody: {
+    color: '#F7F5FC',
+    fontSize: 12,
+    marginTop: 1,
+  },
+  pingBannerDismiss: {
+    padding: 6,
+  },
   quickLock: {
     flexDirection: 'row',
     alignItems: 'center',

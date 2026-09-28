@@ -159,6 +159,52 @@ export class SupabaseRepository {
     }
   }
 
+  async updateDisplayName(
+    userId: string,
+    newDisplayName: string
+  ): Promise<{ success: boolean; error?: string; displayName?: string }> {
+    if (!isUUID(userId)) {
+      return { success: false, error: 'Invalid user session.' };
+    }
+
+    const cleaned = newDisplayName.trim();
+    if (cleaned.length < 1) {
+      return { success: false, error: 'Display name cannot be empty.' };
+    }
+    if (cleaned.length > 50) {
+      return { success: false, error: 'Display name cannot exceed 50 characters.' };
+    }
+
+    try {
+      // 1. Try secure RPC
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('update_display_name', {
+        new_display_name: cleaned,
+      });
+
+      if (!rpcErr && rpcData) {
+        if (rpcData.success) {
+          return { success: true, displayName: cleaned };
+        }
+        return { success: false, error: rpcData.error || 'Failed to update display name.' };
+      }
+
+      // 2. Direct fallback
+      const { error: directErr } = await supabase
+        .from('profiles')
+        .update({ name: cleaned, display_name: cleaned, updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (directErr) {
+        return { success: false, error: directErr.message || 'Failed to update display name.' };
+      }
+
+      return { success: true, displayName: cleaned };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update display name.';
+      return { success: false, error: msg };
+    }
+  }
+
   // --------------------------------------------------------------------------
   // TASKS
   // --------------------------------------------------------------------------
@@ -1193,8 +1239,29 @@ export class SupabaseRepository {
           name: parsed.name,
           mode: parsed.mode,
           inviteCode: parsed.invite_code,
-          members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O' }],
+          members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O', role: 'owner' }],
         };
+      }
+
+      // If rpcErr mentions profile foreign key constraint, re-ensure profile and retry once
+      if (rpcErr && (rpcErr.message?.includes('fk_workspace_members_profiles') || rpcErr.code === '23503')) {
+        await this.ensureProfile({ id: userId });
+        const { data: retryData, error: retryErr } = await supabase.rpc('create_workspace_secure', {
+          name_input: name.trim() || (mode === 'duo' ? 'My Duo' : 'My Team'),
+          mode_input: mode,
+          invite_code_input: inviteCode || null,
+        });
+        if (!retryErr && retryData) {
+          const parsed = typeof retryData === 'string' ? JSON.parse(retryData) : retryData;
+          const members = await this.loadWorkspaceMembers(parsed.id);
+          return {
+            id: parsed.id,
+            name: parsed.name,
+            mode: parsed.mode,
+            inviteCode: parsed.invite_code,
+            members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O', role: 'owner' }],
+          };
+        }
       }
 
       // 2. Direct fallback
@@ -1230,7 +1297,7 @@ export class SupabaseRepository {
         name: wsRow.name,
         mode: wsRow.mode,
         inviteCode: wsRow.invite_code,
-        members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O' }],
+        members: members.length ? members : [{ id: userId, name: 'Owner', avatar: 'O', role: 'owner' }],
       };
     } catch (err) {
       console.warn('[SupabaseRepository] createWorkspace exception:', err);
@@ -1253,9 +1320,19 @@ export class SupabaseRepository {
       }
 
       // 1. Execute secure RPC (checks invite code, server-side Duo 2-member limit, prevents duplicate membership)
-      const { data: rpcData, error: rpcErr } = await supabase.rpc('join_workspace_by_invite', {
+      let { data: rpcData, error: rpcErr } = await supabase.rpc('join_workspace_by_invite', {
         invite_code_input: cleanCode,
       });
+
+      // Handle race condition where profile wasn't fully written before membership insertion
+      if (rpcErr && (rpcErr.message?.includes('fk_workspace_members_profiles') || rpcErr.code === '23503') && userId && isUUID(userId)) {
+        await this.ensureProfile({ id: userId });
+        const retry = await supabase.rpc('join_workspace_by_invite', {
+          invite_code_input: cleanCode,
+        });
+        rpcData = retry.data;
+        rpcErr = retry.error;
+      }
 
       if (rpcErr) {
         return { success: false, error: rpcErr.message };
@@ -1264,6 +1341,12 @@ export class SupabaseRepository {
       if (rpcData) {
         const parsed = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
         const members = await this.loadWorkspaceMembers(parsed.id);
+        const resolvedMembers = members.length
+          ? members
+          : userId
+          ? [{ id: userId, name: 'You', avatar: 'Y', role: 'member' }]
+          : [{ id: parsed.id, name: 'Member', avatar: 'M', role: 'member' }];
+
         return {
           success: true,
           workspace: {
@@ -1271,7 +1354,7 @@ export class SupabaseRepository {
             name: parsed.name,
             mode: parsed.mode,
             inviteCode: parsed.invite_code,
-            members,
+            members: resolvedMembers,
           },
         };
       }

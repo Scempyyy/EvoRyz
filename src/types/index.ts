@@ -14,6 +14,7 @@ export interface AppPreferences {
   theme: 'dark';
   haptics: boolean;
   sfx: boolean;
+  allowPings?: boolean;
 }
 
 export interface User {
@@ -42,6 +43,7 @@ export interface WorkspaceMember {
   notificationsMuted?: boolean;
   lastSeen?: string;
   isOnline?: boolean;
+  acceptedWinterArc?: boolean;
 }
 
 export interface Workspace {
@@ -232,3 +234,41 @@ export interface OfflinePendingAction {
   payload: any;
   createdAt: number;
 }
+
+export interface WinterArcHabit {
+  id: string;
+  title: string;
+  order: number;
+  icon?: string;
+  color?: string;
+  completedDays: string[];
+  createdAt: string;
+}
+
+export type WinterArcNotificationLevel = 'light' | 'normal' | 'lock_in';
+
+export interface FocusGuardConfig {
+  enabled: boolean;
+  thresholdMinutes: number;
+  selectedApps: string[];
+}
+
+export interface WinterArcState {
+  accepted: boolean;
+  acceptedAt?: string;
+  habits: WinterArcHabit[];
+  notificationLevel: WinterArcNotificationLevel;
+  focusGuard: FocusGuardConfig;
+}
+
+export interface PingEvent {
+  id: string;
+  senderId: string;
+  senderName: string;
+  recipientId: string;
+  workspaceId: string;
+  timestamp: string;
+}
+
+export * from './winterArc';
+export * from './friends';

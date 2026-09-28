@@ -1,4 +1,8 @@
-import { evoryzDay } from '../src/services/evoryzDay';
+import {
+  evoryzDay,
+  getNext2amBoundaryDate,
+  getTimeUntilNext2amBoundary,
+} from '../src/services/evoryzDay';
 import { completionPercent, sharedPercent } from '../src/services/recaps';
 import { DailyTask } from '../src/types';
 
@@ -19,6 +23,33 @@ describe('EvoRyz Day Boundary (02:00 -> 01:59)', () => {
     // 2026-09-21 11:45 PM should belong to 2026-09-21
     const nightTime = new Date(2026, 8, 21, 23, 45, 0);
     expect(evoryzDay(nightTime)).toBe('2026-09-21');
+  });
+
+  test('getNext2amBoundaryDate correctly returns today 2 AM when called before 2 AM', () => {
+    const before2am = new Date(2026, 8, 21, 1, 15, 0);
+    const next2am = getNext2amBoundaryDate(before2am);
+    expect(next2am.getFullYear()).toBe(2026);
+    expect(next2am.getMonth()).toBe(8);
+    expect(next2am.getDate()).toBe(21);
+    expect(next2am.getHours()).toBe(2);
+    expect(next2am.getMinutes()).toBe(0);
+  });
+
+  test('getNext2amBoundaryDate correctly returns tomorrow 2 AM when called after 2 AM', () => {
+    const after2am = new Date(2026, 8, 21, 14, 30, 0);
+    const next2am = getNext2amBoundaryDate(after2am);
+    expect(next2am.getFullYear()).toBe(2026);
+    expect(next2am.getMonth()).toBe(8);
+    expect(next2am.getDate()).toBe(22);
+    expect(next2am.getHours()).toBe(2);
+    expect(next2am.getMinutes()).toBe(0);
+  });
+
+  test('getTimeUntilNext2amBoundary returns positive milliseconds', () => {
+    const now = new Date(2026, 8, 21, 12, 0, 0);
+    const diffMs = getTimeUntilNext2amBoundary(now);
+    // 14 hours until 2 AM tomorrow = 14 * 3600 * 1000 = 50,400,000 ms
+    expect(diffMs).toBe(14 * 60 * 60 * 1000);
   });
 });
 
