@@ -8,6 +8,7 @@ import {
   FlatList,
   ActivityIndicator,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
 import { WinterArcLeaderboardEntry } from '@/src/types/winterArc';
@@ -26,6 +27,7 @@ export function WinterArcLeaderboard({
   onSelectUserForSpectate,
   onClose,
 }: WinterArcLeaderboardProps) {
+  const insets = useSafeAreaInsets();
   const [filterMode, setFilterMode] = useState<'global' | 'friends'>('global');
   const [entries, setEntries] = useState<WinterArcLeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,14 +49,14 @@ export function WinterArcLeaderboard({
   }, [filterMode]);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: Math.max(insets.top, 16) + 8 }]}>
       {/* Header */}
       <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>🏆 Solo Leaderboard</Text>
-          <Text style={styles.sub}>Individual Winter Arc execution ranking</Text>
+        <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
+          <Text style={styles.title} numberOfLines={1}>🏆 Solo Leaderboard</Text>
+          <Text style={styles.sub} numberOfLines={1}>Individual Winter Arc execution ranking</Text>
         </View>
-        <Pressable onPress={onClose} style={styles.closeBtn}>
+        <Pressable onPress={onClose} style={styles.closeBtn} accessibilityLabel="Close Leaderboard">
           <Ionicons name="close" size={22} color={colors.muted} />
         </Pressable>
       </View>
@@ -214,9 +216,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginBottom: 16,
+    flexWrap: 'wrap',
   },
   tab: {
     flex: 1,
+    minWidth: 120,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -311,7 +315,7 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 14,
     fontWeight: '800',
-    maxWidth: 130,
+    flexShrink: 1,
   },
   userHandle: {
     color: colors.muted,

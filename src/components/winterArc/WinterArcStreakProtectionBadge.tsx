@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Pressable,
   Modal,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
@@ -14,11 +15,13 @@ import { feedback } from '@/src/services/feedback';
 interface WinterArcStreakProtectionBadgeProps {
   available: boolean;
   history: WinterArcStreakProtection[];
+  compact?: boolean;
 }
 
 export function WinterArcStreakProtectionBadge({
   available,
   history,
+  compact = false,
 }: WinterArcStreakProtectionBadgeProps) {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
 
@@ -27,26 +30,32 @@ export function WinterArcStreakProtectionBadge({
       <Pressable
         style={[
           styles.badge,
+          compact && styles.badgeCompact,
           available ? styles.badgeAvailable : styles.badgeConsumed,
         ]}
         onPress={() => {
           feedback.tap(true);
           setShowHistoryModal(true);
         }}
+        accessibilityLabel={available ? 'Streak Shield Ready' : 'Streak Shield Used'}
+        accessibilityRole="button"
       >
         <Ionicons
           name={available ? 'shield-checkmark' : 'shield-outline'}
-          size={14}
+          size={compact ? 16 : 14}
           color={available ? '#00F5D4' : colors.muted}
         />
-        <Text
-          style={[
-            styles.badgeText,
-            available ? styles.textAvailable : styles.textConsumed,
-          ]}
-        >
-          {available ? 'SHIELD READY' : 'SHIELD USED'}
-        </Text>
+        {!compact && (
+          <Text
+            style={[
+              styles.badgeText,
+              available ? styles.textAvailable : styles.textConsumed,
+            ]}
+            numberOfLines={1}
+          >
+            {available ? 'SHIELD READY' : 'SHIELD USED'}
+          </Text>
+        )}
       </Pressable>
 
       <Modal
@@ -99,17 +108,19 @@ export function WinterArcStreakProtectionBadge({
                 </Text>
               </View>
             ) : (
-              <View style={styles.historyList}>
-                {history.map((item) => (
-                  <View key={item.id} style={styles.historyItem}>
-                    <Ionicons name="shield-checkmark" size={16} color="#00F5D4" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.historyWeek}>{item.weekIdentifier}</Text>
-                      <Text style={styles.historyDate}>Saved day: {item.consumedForDate}</Text>
+              <ScrollView style={{ maxHeight: 180 }} showsVerticalScrollIndicator={false}>
+                <View style={styles.historyList}>
+                  {history.map((item) => (
+                    <View key={item.id} style={styles.historyItem}>
+                      <Ionicons name="shield-checkmark" size={16} color="#00F5D4" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.historyWeek}>{item.weekIdentifier}</Text>
+                        <Text style={styles.historyDate}>Saved day: {item.consumedForDate}</Text>
+                      </View>
                     </View>
-                  </View>
-                ))}
-              </View>
+                  ))}
+                </View>
+              </ScrollView>
             )}
 
             <Pressable
@@ -134,6 +145,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 10,
     borderWidth: 1,
+    flexShrink: 0,
+  },
+  badgeCompact: {
+    width: 36,
+    height: 36,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 10,
   },
   badgeAvailable: {
     backgroundColor: '#0F2625',
@@ -169,6 +190,7 @@ const styles = StyleSheet.create({
     padding: 20,
     maxWidth: 440,
     width: '100%',
+    maxHeight: '90%',
   },
   modalHeader: {
     flexDirection: 'row',

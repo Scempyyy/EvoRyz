@@ -12,6 +12,7 @@ import {
   Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '@/src/theme';
 import {
   WinterArc,
@@ -56,8 +57,10 @@ interface WinterArcDashboardProps {
 }
 
 export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) {
-  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const { width, height, fontScale } = useWindowDimensions();
   const isLandscape = width > height;
+  const isCompactHeader = width < 420 || fontScale > 1.05;
 
   const todayStr = evoryzDay();
   const [selectedDate, setSelectedDate] = useState(todayStr);
@@ -371,7 +374,12 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
   return (
     <View style={styles.root}>
       {/* Top Header Bar */}
-      <View style={styles.topBar}>
+      <View
+        style={[
+          styles.topBar,
+          { paddingTop: Math.max(insets.top, 14) + 6 },
+        ]}
+      >
         <View style={styles.topBarLeft}>
           <Pressable
             style={styles.backBtn}
@@ -379,15 +387,21 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
               feedback.tap(true);
               onExit();
             }}
+            accessibilityLabel="Exit Winter Arc"
+            accessibilityRole="button"
           >
             <Ionicons name="arrow-back" size={20} color="white" />
           </Pressable>
-          <View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="snow" size={16} color="#00F5D4" />
-              <Text style={styles.topBarTitle}>WINTER ARC</Text>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Ionicons name="snow" size={15} color="#00F5D4" />
+              <Text style={styles.topBarTitle} numberOfLines={1} ellipsizeMode="tail">
+                WINTER ARC
+              </Text>
             </View>
-            <Text style={styles.topBarSub}>Day {currentDayNum} of {getTotalDaysInArc()} · Resets 2 AM</Text>
+            <Text style={styles.topBarSub} numberOfLines={1} ellipsizeMode="tail">
+              Day {currentDayNum} of {getTotalDaysInArc()} · Resets 2 AM
+            </Text>
           </View>
         </View>
 
@@ -395,6 +409,7 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
           <WinterArcStreakProtectionBadge
             available={arc.streakProtectionAvailable}
             history={protections}
+            compact={isCompactHeader}
           />
 
           <Pressable
@@ -403,18 +418,22 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
               feedback.tap(true);
               setShowAICoach(true);
             }}
+            accessibilityLabel="AI Coach"
+            accessibilityRole="button"
           >
             <Ionicons name="sparkles" size={17} color="#00F5D4" />
           </Pressable>
 
           <Pressable
-            style={styles.actionIconBtn}
+            style={[styles.actionIconBtn, styles.topBarLeaderboardBtn]}
             onPress={() => {
               feedback.tap(true);
               setShowLeaderboard(true);
             }}
+            accessibilityLabel="Leaderboard"
+            accessibilityRole="button"
           >
-            <Ionicons name="trophy-outline" size={18} color="#FFB703" />
+            <Ionicons name="trophy" size={17} color="#FFB703" />
           </Pressable>
 
           <Pressable
@@ -423,6 +442,8 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
               feedback.tap(true);
               setShowSetupModal(true);
             }}
+            accessibilityLabel="Winter Arc Settings"
+            accessibilityRole="button"
           >
             <Ionicons name="settings-outline" size={18} color={colors.muted} />
           </Pressable>
@@ -508,6 +529,41 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
             </ScrollView>
           </View>
 
+          {/* Global Leaderboard & Spectate Action Banner */}
+          <Pressable
+            style={styles.leaderboardBanner}
+            onPress={() => {
+              feedback.tap(true);
+              setShowLeaderboard(true);
+            }}
+            accessibilityLabel="Open Winter Arc Leaderboard"
+            accessibilityRole="button"
+          >
+            <View style={styles.leaderboardBannerLeft}>
+              <View style={styles.leaderboardTrophyBox}>
+                <Ionicons name="trophy" size={20} color="#FFB703" />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={styles.leaderboardBannerTitleRow}>
+                  <Text style={styles.leaderboardBannerTitle} numberOfLines={1}>
+                    LEADERBOARD
+                  </Text>
+                  <View style={styles.liveBadge}>
+                    <View style={styles.liveDot} />
+                    <Text style={styles.liveBadgeText}>LIVE</Text>
+                  </View>
+                </View>
+                <Text style={styles.leaderboardBannerSub} numberOfLines={2}>
+                  Global & friends rankings · Spectate protocols
+                </Text>
+              </View>
+            </View>
+            <View style={styles.leaderboardBannerArrow}>
+              <Text style={styles.leaderboardBannerOpenText}>View</Text>
+              <Ionicons name="chevron-forward" size={16} color="#FFB703" />
+            </View>
+          </Pressable>
+
           {/* Daily Rules Checklist */}
           <View style={styles.rulesSection}>
             <View style={styles.rulesSectionHeader}>
@@ -583,12 +639,22 @@ export function WinterArcDashboard({ userId, onExit }: WinterArcDashboardProps) 
 
           {/* Milestones Achieved Quick View */}
           <Card style={styles.milestonesCard}>
-            <View style={styles.milestonesHeader}>
+            <Pressable
+              style={styles.milestonesHeader}
+              onPress={() => {
+                feedback.tap(true);
+                setShowLeaderboard(true);
+              }}
+              accessibilityLabel="View Leaderboard from Milestones"
+              accessibilityRole="button"
+            >
               <Ionicons name="trophy" size={18} color="#FFB703" />
               <Text style={styles.milestonesTitle}>
                 MILESTONES ({milestones.length}/6 UNLOCKED)
               </Text>
-            </View>
+              <View style={{ flex: 1 }} />
+              <Text style={styles.milestonesLeaderboardLink}>Leaderboard &gt;</Text>
+            </Pressable>
             <View style={styles.milestonesRow}>
               {['day_7', 'day_14', 'day_30', 'day_50', 'day_75', 'completed'].map((key) => {
                 const unlocked = milestones.some((m) => m.milestoneKey === key);
@@ -752,9 +818,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 45,
-    paddingBottom: 14,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
     borderBottomColor: '#1A1629',
     borderBottomWidth: 1,
     backgroundColor: '#0D0B14',
@@ -762,7 +827,10 @@ const styles = StyleSheet.create({
   topBarLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
+    marginRight: 6,
   },
   backBtn: {
     width: 36,
@@ -771,12 +839,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#181426',
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
   },
   topBarTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '900',
     color: 'white',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   topBarSub: {
     fontSize: 11,
@@ -785,15 +854,22 @@ const styles = StyleSheet.create({
   topBarRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    flexShrink: 0,
   },
   actionIconBtn: {
-    width: 34,
-    height: 34,
+    width: 36,
+    height: 36,
     borderRadius: 10,
     backgroundColor: '#181426',
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
+  },
+  topBarLeaderboardBtn: {
+    backgroundColor: '#261F12',
+    borderColor: '#7A5812',
+    borderWidth: 1,
   },
   scrollContent: {
     padding: 16,
@@ -825,6 +901,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+    flexWrap: 'wrap',
+    gap: 12,
   },
   heroEyebrow: {
     fontSize: 11,
@@ -916,6 +994,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
+    flexWrap: 'wrap',
+    gap: 8,
   },
   rulesSectionTitle: {
     fontSize: 11,
@@ -1038,5 +1118,92 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 13,
     fontWeight: '800',
+  },
+  leaderboardBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#14101A',
+    borderColor: '#3D2F1B',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+    gap: 10,
+  },
+  leaderboardBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  leaderboardTrophyBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#261F12',
+    borderColor: '#7A5812',
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  leaderboardBannerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  leaderboardBannerTitle: {
+    color: '#FFB703',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1C3322',
+    paddingVertical: 1,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+  },
+  liveDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#00F5D4',
+  },
+  liveBadgeText: {
+    color: '#00F5D4',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  leaderboardBannerSub: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  leaderboardBannerArrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    backgroundColor: '#261F12',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  leaderboardBannerOpenText: {
+    color: '#FFB703',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  milestonesLeaderboardLink: {
+    color: '#FFB703',
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

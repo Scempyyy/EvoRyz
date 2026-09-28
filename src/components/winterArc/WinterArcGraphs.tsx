@@ -222,6 +222,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginBottom: 16,
+    flexWrap: 'wrap',
   },
   tabBtn: {
     flexDirection: 'row',
