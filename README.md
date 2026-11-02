@@ -1,18 +1,32 @@
+<div align="center">
+
 # EvoRyz
+### Build better days. Grow together.
 
-Build better days. Grow together.
+A personal growth and accountability app for individuals, pairs, and teams.
 
-EvoRyz is a personal growth and accountability app for solo goals, duo partnerships, and teams. It brings daily planning, to-dos, habits, journaling, meals, chat, and AI-assisted workflows into one place.
+[Repository](https://github.com/Scempyyy/EvoRyz)
+
+</div>
+
+---
+
+## What it is
+
+EvoRyz brings everyday planning and personal growth into one connected experience.
 
 ## Highlights
-- Solo, Duo, and Team modes
+- **Solo, Duo, and Team** modes
 - Daily planning and task tracking
 - Habit routines and journaling
 - Meals integrated into the daily workflow
 - Chat and AI-assisted workflows
 
-## Technology
-Expo / React Native · Supabase
+## Built with
+`Expo` · `React Native` · `Supabase`
 
-## Status
-In active development. This repository is the home for EvoRyz source code and documentation.
+## Project status
+In active development. Features and setup instructions may evolve as the project grows.
+
+## Contributing
+Issues and thoughtful suggestions are welcome. Please describe the use case and expected behavior when reporting a problem.
