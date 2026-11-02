@@ -155,6 +155,28 @@ Issues and thoughtful suggestions are welcome. Please describe the use case and 
 
 ---
 
+## 👥 Contributors & Activity Graph
+
+<div align="center">
+
+[![Contributors](https://img.shields.io/github/contributors/Scempyyy/EvoRyz?style=for-the-badge&color=0284C7)](https://github.com/Scempyyy/EvoRyz/graphs/contributors)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/Scempyyy/EvoRyz?style=for-the-badge&color=10B981)](https://github.com/Scempyyy/EvoRyz/pulse)
+[![Last Commit](https://img.shields.io/github/last-commit/Scempyyy/EvoRyz?style=for-the-badge&color=6366F1)](https://github.com/Scempyyy/EvoRyz/commits/main)
+
+<br/><br/>
+
+<a href="https://github.com/Scempyyy/EvoRyz/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Scempyyy/EvoRyz" alt="EvoRyz Contributors" />
+</a>
+
+<br/><br/>
+
+[📊 View Full Repository Insights & Contribution Graph →](https://github.com/Scempyyy/EvoRyz/graphs/contributors)
+
+</div>
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
