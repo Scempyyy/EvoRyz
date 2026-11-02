@@ -29,4 +29,12 @@ export const feedback = {
   sound(name: SfxName, enabled = true) {
     if (enabled) void sfx.play(name);
   },
+  ping(sfxEnabled = true, hapticsEnabled = true) {
+    if (hapticsEnabled) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+    }
+    if (sfxEnabled) {
+      void sfx.play('ping');
+    }
+  },
 };

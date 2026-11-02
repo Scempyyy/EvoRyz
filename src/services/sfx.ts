@@ -13,7 +13,8 @@ export type SfxName =
   | 'workspaceConnected'
   | 'error'
   | 'success'
-  | 'notification';
+  | 'notification'
+  | 'ping';
 
 const preferenceKey = 'evoryz.sfx.enabled';
 
@@ -29,6 +30,7 @@ const files: Record<SfxName, string> = {
   error: 'error.mp3',
   success: 'success.mp3',
   notification: 'notification.mp3',
+  ping: 'notification.mp3',
 };
 
 export const ALL_SFX_LIST: { id: SfxName; name: string; file: string }[] = [
@@ -43,6 +45,7 @@ export const ALL_SFX_LIST: { id: SfxName; name: string; file: string }[] = [
   { id: 'success', name: 'Success Confirmation', file: 'success.mp3' },
   { id: 'error', name: 'Error Alert', file: 'error.mp3' },
   { id: 'notification', name: 'Notification Chime', file: 'notification.mp3' },
+  { id: 'ping', name: 'Teammate Ping Sound', file: 'notification.mp3' },
 ];
 
 const bundledAssets: Record<SfxName, any> = {
@@ -57,6 +60,7 @@ const bundledAssets: Record<SfxName, any> = {
   error: require('@/assets/sfx/error.mp3'),
   success: require('@/assets/sfx/success.mp3'),
   notification: require('@/assets/sfx/notification.mp3'),
+  ping: require('@/assets/sfx/notification.mp3'),
 };
 
 class SfxService {
@@ -97,7 +101,8 @@ class SfxService {
   async play(name: SfxName) {
     if (!this.enabled || bundledAssets[name] === undefined) return;
     const now = Date.now();
-    if (now - (this.recent.get(name) ?? 0) < 80) return;
+    const debounceTime = name === 'ping' ? 600 : 80;
+    if (now - (this.recent.get(name) ?? 0) < debounceTime) return;
     this.recent.set(name, now);
     try {
       await setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'mixWithOthers' });

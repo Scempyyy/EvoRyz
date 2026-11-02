@@ -544,7 +544,7 @@ export default function Profile() {
       <View style={s.setting}>
         <View style={{ flex: 1, paddingRight: 8 }}>
           <Text style={s.settingText}>Allow Teammate Pings</Text>
-          <Text style={s.settingSub}>Attention sounds and alerts from workspace friends</Text>
+          <Text style={s.settingSub}>In-app attention sounds and alerts from friends</Text>
         </View>
         <Switch
           value={preferences.allowPings !== false}
@@ -552,27 +552,6 @@ export default function Profile() {
           trackColor={{ true: '#00F5D4' }}
         />
       </View>
-      <Pressable
-        style={s.setting}
-        onPress={() => {
-          feedback.tap(preferences.haptics);
-          if (Platform.OS === 'android') {
-            Linking.sendIntent('android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS').catch(() =>
-              Linking.openSettings()
-            );
-          } else {
-            Linking.openSettings();
-          }
-        }}
-      >
-        <View style={{ flex: 1, paddingRight: 8 }}>
-          <Text style={s.settingText}>Ping Sound & DND Access</Text>
-          <Text style={s.settingSub}>
-            Allow EvoRyz to get your attention with Ping sounds. Android requires Do Not Disturb permission to sound in Silent/DND.
-          </Text>
-        </View>
-        <Ionicons name="open-outline" size={18} color={colors.violetLight} />
-      </Pressable>
       <Pressable
         style={s.setting}
         onPress={handleTestNotification}
@@ -690,9 +669,23 @@ export default function Profile() {
           trackColor={{ true: colors.violet }}
         />
       </View>
+      <Pressable
+        style={s.setting}
+        accessibilityRole="button"
+        accessibilityLabel="Test Ping Sound"
+        onPress={() => {
+          feedback.ping(preferences.sfx, preferences.haptics);
+        }}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={s.settingText}>Test Ping Sound</Text>
+          <Text style={s.settingSub}>Play the EvoRyz ping sound on this device.</Text>
+        </View>
+        <Ionicons name="volume-high-outline" size={20} color={colors.violetLight} />
+      </Pressable>
 
       {/* SFX Audio Test Panel */}
-      <Text style={s.section}>SFX SOUND TEST PANEL (11 SOUNDS)</Text>
+      <Text style={s.section}>SFX SOUND TEST PANEL ({ALL_SFX_LIST.length} SOUNDS)</Text>
       <Card style={s.sfxPanel}>
         <Text style={s.sfxPanelSub}>Tap any sound below to verify real-device audio playback:</Text>
         <View style={s.sfxGrid}>

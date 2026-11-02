@@ -22,6 +22,8 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 
 export class SupabaseRepository {
   private messageChannel: RealtimeChannel | null = null;
+  private messageSubscriptionSeq = 0;
+  private activeMessageSubscriptionId = 0;
 
   // --------------------------------------------------------------------------
   // PROFILES
@@ -788,9 +790,12 @@ export class SupabaseRepository {
       error?: Error
     ) => void
   ): () => void {
+    const currentSubId = ++this.messageSubscriptionSeq;
+    this.activeMessageSubscriptionId = currentSubId;
     let isCancelled = false;
     let subscribeTimer: ReturnType<typeof setTimeout> | null = null;
     let isTerminal = false;
+    let instanceChannel: RealtimeChannel | null = null;
 
     if (this.messageChannel) {
       const oldChannel = this.messageChannel;
@@ -802,13 +807,14 @@ export class SupabaseRepository {
 
     const validWsId = workspaceId && isUUID(workspaceId) ? workspaceId : null;
     const channelTopic = validWsId
-      ? `chat-ws-${validWsId}-${Date.now()}`
-      : `chat-${conversationId}-${Date.now()}`;
+      ? `chat-ws-${validWsId}-${currentSubId}`
+      : `chat-${conversationId}-${currentSubId}`;
     const filter = validWsId
       ? `workspace_id=eq.${validWsId}`
       : `conversation_id=eq.${conversationId}`;
 
     const setup = async () => {
+      if (isCancelled || this.activeMessageSubscriptionId !== currentSubId) return;
       onStatusChange?.('CONNECTING');
 
       try {
@@ -829,13 +835,14 @@ export class SupabaseRepository {
         console.warn('[SupabaseRepository] Realtime setAuth error:', authErr);
       }
 
-      if (isCancelled) return;
+      if (isCancelled || this.activeMessageSubscriptionId !== currentSubId) return;
 
       const channel = supabase.channel(channelTopic);
+      instanceChannel = channel;
       this.messageChannel = channel;
 
       subscribeTimer = setTimeout(() => {
-        if (!isTerminal && !isCancelled) {
+        if (!isTerminal && !isCancelled && this.activeMessageSubscriptionId === currentSubId) {
           isTerminal = true;
           const timeoutErr = new Error(`Realtime subscription to ${channelTopic} timed out after 8s`);
           console.error('[SupabaseRepository]', timeoutErr.message);
@@ -853,6 +860,7 @@ export class SupabaseRepository {
             filter,
           },
           (payload) => {
+            if (isCancelled || this.activeMessageSubscriptionId !== currentSubId) return;
             const row = payload.new as any;
             if (row) {
               if (validWsId && row.workspace_id && row.workspace_id !== validWsId) {
@@ -882,7 +890,7 @@ export class SupabaseRepository {
           }
         )
         .subscribe((status, err) => {
-          if (isCancelled) return;
+          if (isCancelled || this.activeMessageSubscriptionId !== currentSubId) return;
 
           console.log(`[SupabaseRepository] Subscription callback for ${channelTopic}: status=${status}`, err ?? '');
 
@@ -915,13 +923,19 @@ export class SupabaseRepository {
 
     return () => {
       isCancelled = true;
+      if (this.activeMessageSubscriptionId === currentSubId) {
+        this.activeMessageSubscriptionId = 0;
+      }
       if (subscribeTimer) {
         clearTimeout(subscribeTimer);
         subscribeTimer = null;
       }
-      if (this.messageChannel) {
-        const ch = this.messageChannel;
-        this.messageChannel = null;
+      if (instanceChannel) {
+        const ch = instanceChannel;
+        instanceChannel = null;
+        if (this.messageChannel === ch) {
+          this.messageChannel = null;
+        }
         void supabase.removeChannel(ch).catch(() => {});
       }
     };

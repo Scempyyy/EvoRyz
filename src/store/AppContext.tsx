@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createContext, ReactNode, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import { createContext, ReactNode, useContext, useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { AppState, Alert } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
 
@@ -38,7 +38,6 @@ import {
   triggerDailyRecapNotification,
   scheduleDaily2amNotification,
   scheduleWinterArcNotifications,
-  sendPingNotification,
 } from '@/src/services/notifications';
 import { defaultWinterArcState, isWinterArcDateLocked } from '@/src/services/winterArc';
 import { feedback } from '@/src/services/feedback';
@@ -383,6 +382,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, refreshFriends]);
 
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  });
+
+  // Deduplication cache for incoming pings to prevent replay on reconnect/re-render
+  const processedPingIdsRef = useRef<Set<string>>(new Set());
+  const lastPingSoundTimeRef = useRef<number>(0);
+  const friendsRef = useRef(friends);
+  useEffect(() => {
+    friendsRef.current = friends;
+  }, [friends]);
+
+  const playIncomingPing = useCallback((pingId?: string) => {
+    // Only play sound if app is currently in foreground
+    if (AppState.currentState !== 'active') return;
+    // Respect user setting
+    if (stateRef.current.user.settings.preferences.allowPings === false) return;
+
+    // Deduplicate so reconnects/re-subscriptions don't re-play the same ping
+    if (pingId) {
+      if (processedPingIdsRef.current.has(pingId)) return;
+      processedPingIdsRef.current.add(pingId);
+      if (processedPingIdsRef.current.size > 200) {
+        const oldest = Array.from(processedPingIdsRef.current).slice(0, 50);
+        oldest.forEach((id) => processedPingIdsRef.current.delete(id));
+      }
+    }
+
+    // Debounce to prevent audio flood
+    const now = Date.now();
+    if (now - lastPingSoundTimeRef.current < 600) return;
+    lastPingSoundTimeRef.current = now;
+
+    feedback.ping(
+      stateRef.current.user.settings.preferences.sfx,
+      stateRef.current.user.settings.preferences.haptics
+    );
+  }, []);
+
   // Realtime subscription for friend pings and friend requests
   useEffect(() => {
     const uid = session?.user?.id || state.user.id;
@@ -401,14 +440,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (payload) => {
           const ping = payload.new as any;
           if (!ping) return;
-          if (state.user.settings.preferences.allowPings === false) return;
+          if (stateRef.current.user.settings.preferences.allowPings === false) return;
 
-          const sender = friends.find((f) => f.id === ping.sender_id);
+          const pingId = ping.id ? String(ping.id) : `fp_${ping.sender_id}_${ping.created_at}`;
+          playIncomingPing(pingId);
+
+          const sender = friendsRef.current.find((f: any) => f.id === ping.sender_id);
           const senderName = sender?.name || 'A friend';
-
-          feedback.sound('notification', state.user.settings.preferences.sfx);
-          feedback.haptic('heavy');
-          void sendPingNotification(senderName);
           Alert.alert('👋 Friend Ping', `${senderName} pinged you!`);
         }
       )
@@ -442,9 +480,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [
     session?.user?.id,
     state.user.id,
-    state.user.settings.preferences.allowPings,
-    state.user.settings.preferences.sfx,
-    friends,
+    playIncomingPing,
     refreshFriends,
   ]);
 
@@ -486,14 +522,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (ping.recipientId && ping.recipientId !== currentUserId) {
           return;
         }
-        if (state.user.settings.preferences.allowPings === false) {
+        if (stateRef.current.user.settings.preferences.allowPings === false) {
           return;
         }
 
-        feedback.sound('notification', state.user.settings.preferences.sfx);
-        feedback.haptic('heavy');
+        playIncomingPing(ping.id);
         setActivePingAlert(ping);
-        void sendPingNotification(ping.senderName);
       })
       .on('broadcast', { event: 'teammate_winter_arc_join' }, ({ payload }) => {
         if (!payload?.userId) return;
@@ -519,8 +553,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     state.workspace?.id,
     session?.user?.id,
     state.user.id,
-    state.user.settings.preferences.allowPings,
-    state.user.settings.preferences.sfx,
+    playIncomingPing,
   ]);
 
   // 1. Hydrate local cached state and sound effects on launch
@@ -819,13 +852,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [session?.user?.id, state.user.id]);
 
+  const chatConfigRef = useRef({
+    currentUserId: session?.user?.id || state.user.id,
+    sfxEnabled: state.user.settings.preferences.sfx,
+    notificationsEnabled: state.user.settings.notifications.enabled,
+    workspaceMembers: state.workspace?.members,
+  });
+
+  useEffect(() => {
+    chatConfigRef.current = {
+      currentUserId: session?.user?.id || state.user.id,
+      sfxEnabled: state.user.settings.preferences.sfx,
+      notificationsEnabled: state.user.settings.notifications.enabled,
+      workspaceMembers: state.workspace?.members,
+    };
+  });
+
   // 4. Subscribe to Realtime messages when workspace and authenticated session are active
   useEffect(() => {
     const wsId = state.workspace?.id;
-    const token = session?.access_token;
-    const uid = session?.user?.id;
+    const uid = session?.user?.id || state.user.id;
 
-    if (!wsId || !isUUID(wsId) || !token || !uid || !isUUID(uid)) {
+    if (!wsId || !isUUID(wsId) || !uid || !isUUID(uid)) {
+      setChatConnectionStatus('DISCONNECTED');
       return;
     }
 
@@ -846,11 +895,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubscribe = supabaseRepo.subscribeToMessages(
       'workspace',
       (newMsg) => {
-        const isFromMe = newMsg.senderId === (session?.user?.id || state.user.id);
+        const config = chatConfigRef.current;
+        const isFromMe = newMsg.senderId === config.currentUserId;
         if (!isFromMe) {
-          feedback.sound('messageReceived', state.user.settings.preferences.sfx);
-          if (newMsg.type !== 'system' && state.user.settings.notifications.enabled) {
-            const senderMember = state.workspace?.members?.find((m) => m.id === newMsg.senderId);
+          feedback.sound('messageReceived', config.sfxEnabled);
+          if (newMsg.type !== 'system' && config.notificationsEnabled) {
+            const senderMember = config.workspaceMembers?.find((m: any) => m.id === newMsg.senderId);
             const senderName = newMsg.senderName || senderMember?.name || 'Teammate';
             void sendPeerMessageNotification({
               messageId: newMsg.id,
@@ -889,13 +939,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [
     state.workspace?.id,
-    state.workspace?.members,
-    session?.access_token,
     session?.user?.id,
-    chatRetryTrigger,
     state.user.id,
-    state.user.settings.preferences.sfx,
-    state.user.settings.notifications.enabled,
+    chatRetryTrigger,
   ]);
 
   // 5. Reconnect Realtime and refresh state when app returns to foreground
@@ -2212,10 +2258,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         };
 
         try {
-          feedback.sound('notification', state.user.settings.preferences.sfx);
-          feedback.haptic('heavy');
+          playIncomingPing(testPing.id);
           setActivePingAlert(testPing);
-          await sendPingNotification(testPing.senderName);
           setPingCooldown(60);
 
           return { success: true };
@@ -2315,6 +2359,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     outgoingFriendRequests,
     friendPingCooldowns,
     refreshFriends,
+    playIncomingPing,
   ]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;

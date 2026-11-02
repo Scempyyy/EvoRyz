@@ -146,21 +146,9 @@ describe('Notifications Service', () => {
   });
 
   describe('sendPingNotification', () => {
-    it('schedules high-priority notification on evoryz-ping-channel', async () => {
+    it('does not schedule an Android notification for ping (strictly in-app sound)', async () => {
       await sendPingNotification('Alex');
-
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.objectContaining({
-            title: '⚡ EvoRyz Ping!',
-            body: 'Alex is pinging you to come online.',
-            sound: EVORYZ_NOTIFICATION_SOUND,
-          }),
-          trigger: expect.objectContaining({
-            channelId: PING_CHANNEL_ID,
-          }),
-        })
-      );
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
     });
   });
 

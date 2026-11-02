@@ -6,15 +6,9 @@ expo-env.d.ts
 # @end expo-cli
 .expo/
 
-.env.local
-
-node_modules/
-
-
-.env.local
-
-node_modules/
-.env.local
+.env
+.env.*
+!.env.example
 
 node_modules/
 
@@ -22,3 +16,9 @@ node_modules/
 supabase/.temp/
 dist/
 *.apk
+
+# Android keystores and signing certificates
+*.keystore
+*.jks
+debug.keystore
+

@@ -75,16 +75,10 @@ export async function initNotificationChannelsAsync(): Promise<void> {
       enableVibrate: true,
     });
 
-    await Notifications.setNotificationChannelAsync(PING_CHANNEL_ID, {
-      name: 'Teammate Pings',
-      description: 'High-priority attention alerts from teammates',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 500, 200, 500],
-      lightColor: '#EC4899',
-      sound: EVORYZ_NOTIFICATION_SOUND,
-      enableVibrate: true,
-      bypassDnd: true,
-    });
+    // Clean up legacy Ping channel if present on device so DND/bypassDnd is completely revoked
+    if (typeof Notifications.deleteNotificationChannelAsync === 'function') {
+      await Notifications.deleteNotificationChannelAsync(PING_CHANNEL_ID).catch(() => {});
+    }
 
     await Notifications.setNotificationChannelAsync(CHAT_CHANNEL_ID, {
       name: 'Team Chat',
@@ -305,26 +299,11 @@ export async function sendPeerMessageNotification(params: {
 }
 
 /**
- * Sends a high-priority teammate attention Ping notification.
+ * @deprecated Ping is strictly an in-app realtime sound event, not an Android notification.
  */
-export async function sendPingNotification(params: { senderName: string } | string): Promise<void> {
-  const senderName = typeof params === 'string' ? params : params.senderName;
-  try {
-    await initNotificationChannelsAsync();
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: '⚡ EvoRyz Ping!',
-        body: `${senderName} is pinging you to come online.`,
-        sound: EVORYZ_NOTIFICATION_SOUND,
-        priority: Notifications.AndroidNotificationPriority.MAX,
-      },
-      trigger: {
-        channelId: PING_CHANNEL_ID,
-      } as any,
-    });
-  } catch (err) {
-    console.warn('[Notifications] sendPingNotification error:', err);
-  }
+export async function sendPingNotification(_params: { senderName: string } | string): Promise<void> {
+  // Pings are strictly in-app realtime audio events per user requirements.
+  return Promise.resolve();
 }
 
 /**
